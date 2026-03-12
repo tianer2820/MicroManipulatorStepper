@@ -9,7 +9,7 @@ oms.read_device_state_info()
 
 _, data = oms.calibrate_joint(0, save_result=True)
 
-with open('output_1.csv', 'w', newline='') as csvfile:
+with open('output_0.csv', 'w', newline='') as csvfile:
     # Create a CSV writer object
     writer = csv.writer(csvfile, delimiter=',')
     # Write all rows at once
