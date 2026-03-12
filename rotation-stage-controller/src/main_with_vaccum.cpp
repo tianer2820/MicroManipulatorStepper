@@ -4,50 +4,12 @@
 #include <SPI.h>
 #include <Wire.h>
 
-/**
- * MT6835 Sensor
- */
-
-#define SENSOR_MOSI PB5
-#define SENSOR_MISO PB4
-#define SENSOR_SCK  PB3
-#define SENSOR_SS   PA15
-
 SPIClass SensorSPI(SENSOR_MOSI, SENSOR_MISO, SENSOR_SCK);
 static SPISettings MT6835SPISettings(1000000, MSBFIRST, SPI_MODE3);
 #define MT6835_CPR 2097152
 
 int32_t last_sensor_angle = 0;
 int32_t sensor_angle_wraps = 0;
-
-/**
- * PWM (Motor drive)
- */
-
-// The 72MHz clock cannot support 40kHz with 12-bit resolution, so the actual frequency will be lower
-#define PWM_FREQ 40000
-#define PWM_RESOLUTION RESOLUTION_12B_COMPARE_FORMAT
-#define PWM_MAX_VALUE 4096
-
-#define MOT_A_POS PA_0
-#define MOT_A_NEG PA_1
-#define MOT_B_POS PA_2
-#define MOT_B_NEG PA_3
-
-/**
- * I2C
- */
-#define I2C_SDA PB7
-#define I2C_SCL PB6
-
-/**
- * Vacuum Pump Control
- * Drive pump through POWER FET with PWM
- */
-#define VAC_PWM_PIN   PB0     // tentative
-#define VAC_PWM_FREQ  25000   // tentative
-#define VAC_PWM_RES   RESOLUTION_12B_COMPARE_FORMAT
-#define VAC_PWM_MAX   4096
 
 uint16_t vac_pull_duty = (uint16_t)(VAC_PWM_MAX * 1.00f); // 100%
 uint16_t vac_hold_duty = (uint16_t)(VAC_PWM_MAX * 0.35f); // 35% (need tuning)
@@ -362,7 +324,7 @@ void loop()
     // vacuum state machine (pulldown -> hold)
     vacuum_update();
 
-    // ---------------- Serial parsing ----------------
+    // Serial parsing 
     if (Serial.available() > 0)
     {
         char c = Serial.read();
@@ -413,7 +375,7 @@ void loop()
             }
             else
             {
-                // Angle input in degree*100 (your original behavior)
+                // Angle input in degree*100
                 int temp = 0;
                 for (int n = 0; n < (int)input_index; n++)
                 {
