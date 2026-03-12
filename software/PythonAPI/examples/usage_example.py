@@ -7,40 +7,45 @@ oms = OpenMicroStageInterface(show_communication=True, show_log_messages=True)
 oms.connect('COM5')
 oms.read_device_state_info()
 
-_, data = oms.calibrate_joint(0, save_result=True)
-
-with open('output_0.csv', 'w', newline='') as csvfile:
-    # Create a CSV writer object
-    writer = csv.writer(csvfile, delimiter=',')
-    # Write all rows at once
-    writer.writerows(data)
 
 
-# # run this once to calibrate joints
-# # for i in range(3): oms.calibrate_joint(i, save_result=True)
+AXIS_CALIBRATION = 2
+ENABLE_CALIBRATION = False
+if ENABLE_CALIBRATION:
+    _, data = oms.calibrate_joint(AXIS_CALIBRATION, save_result=True)
 
-# input("press to home")
-# oms.home()
+    with open(f'output_{AXIS_CALIBRATION}.csv', 'w', newline='') as csvfile:
+        # Create a CSV writer object
+        writer = csv.writer(csvfile, delimiter=',')
+        # Write all rows at once
+        writer.writerows(data)
 
-# # run this once to calibrate joints
-# #for i in range(3): oms.calibrate_joint(i, save_result=True)
+    import sys
+    sys.exit(0)
 
-# # home device
-# input("press to 3,4,5")
-# oms.move_to(3.0, 4.0, 5.0, f=10)
-# oms.wait_for_stop()
 
-# #oms.move_to(3.1, 4.1, 5.9, f=26)
-# #oms.wait_for_stop()
+input("press to home")
+oms.home()
 
-# input("press to 0,0,0")
-# #oms.move_to(3.1, 4.1, 5.9, f=26)
-# oms.move_to(0.0, 0.0, 0.0, f=10)
-# oms.wait_for_stop()
+# run this once to calibrate joints
+#for i in range(3): oms.calibrate_joint(i, save_result=True)
 
-# input("press to home")
-# oms.home()
-# oms.wait_for_stop()
+# home device
+input("press to 3,4,5")
+oms.set_pose(3.0, 4.0, 5.0)
+oms.wait_for_stop()
 
-# # wait for moves to finish
-# oms.read_device_state_info()
+#oms.move_to(3.1, 4.1, 5.9, f=26)
+#oms.wait_for_stop()
+
+input("press to 0,0,0")
+#oms.move_to(3.1, 4.1, 5.9, f=26)
+oms.set_pose(0.0, 0.0, 0.0)
+oms.wait_for_stop()
+
+input("press to home")
+oms.home()
+oms.wait_for_stop()
+
+# wait for moves to finish
+oms.read_device_state_info()

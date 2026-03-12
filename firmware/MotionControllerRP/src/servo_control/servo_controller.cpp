@@ -97,10 +97,10 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
   // set new field direction
   // motor_driver.set_amplitude(std::clamp(abs(output*10.0f), 0.1f, 0.5f), false);
   if(motor_update_enabled) {
-    LOG_DEBUG("Motor update enabled and setting field angle to %f", field_angle + output);
+    //LOG_DEBUG("Motor update enabled and setting field angle to %f", field_angle + output);
     motor_driver.set_field_angle(field_angle + output);
   } else {
-    LOG_DEBUG("Motor update disabled thus not updating");
+    //LOG_DEBUG("Motor update disabled thus not updating");
   }
 
   // store values for next update

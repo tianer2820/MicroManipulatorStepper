@@ -51,15 +51,15 @@ void PathPlanner::process(bool disable_interrupts_for_queue_update) {
                                                            kinematic_model,
                                                            segment_time_step);
 
-    LOG_INFO("Starting segment: duration=%fs, (%f, %f, %f)->(%f, %f, %f) | queue size: %i", 
-      current_segment->get_duration(),
-      current_segment->start_pose.translation.x,
-      current_segment->start_pose.translation.y,
-      current_segment->start_pose.translation.z,
-      current_segment->end_pose.translation.x,
-      current_segment->end_pose.translation.y,
-      current_segment->end_pose.translation.z,
-      ct_path_segment_queue.size());
+    // LOG_INFO("Starting segment: duration=%fs, (%f, %f, %f)->(%f, %f, %f) | queue size: %i", 
+    //   current_segment->get_duration(),
+    //   current_segment->start_pose.translation.x,
+    //   current_segment->start_pose.translation.y,
+    //   current_segment->start_pose.translation.z,
+    //   current_segment->end_pose.translation.x,
+    //   current_segment->end_pose.translation.y,
+    //   current_segment->end_pose.translation.z,
+    //   ct_path_segment_queue.size());
   }
 
   // generate joint space segment
@@ -76,9 +76,9 @@ void PathPlanner::process(bool disable_interrupts_for_queue_update) {
       js_path_segment_queue.push(segment);
     }
 
-    LOG_INFO("Adding joint space segment: [%f, %f, %f] -> [%f, %f, %f]", 
-      segment.start_pos[0], segment.start_pos[1],  segment.start_pos[2],
-      segment.end_pos[0], segment.end_pos[1],  segment.end_pos[2]);
+    // LOG_INFO("Adding joint space segment: [%f, %f, %f] -> [%f, %f, %f]", 
+    //   segment.start_pos[0], segment.start_pos[1],  segment.start_pos[2],
+    //   segment.end_pos[0], segment.end_pos[1],  segment.end_pos[2]);
 
     // check if current cartesian path segmetn is completed
     if(end_reached) {

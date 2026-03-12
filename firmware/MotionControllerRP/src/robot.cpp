@@ -100,6 +100,9 @@ void RobotJoint::update(float dt, float one_over_dt) {
 }
 
 void RobotJoint::update_target(float p, float v) {
+  // if (position != p || velocity != v){
+  //   LOG_DEBUG("Updating Joint %d to new pos %f and vel %f", joint_idx, p, v);
+  // }
   position = p;
   velocity = v;
 }
@@ -365,7 +368,7 @@ void Robot::set_pose(const Pose6DF& pose) {
       for (int i = 0; i < NUM_JOINTS; i++) {
         shared_data.joint_target_positions[i] = joint_positions[i];
         shared_data.joint_target_velocities[i] = 0.0f;
-        // LOG_DEBUG("Joint-%i: set pose -> angle %f", i, joint_positions[i]);
+        LOG_DEBUG("Joint-%i: set pose -> angle %f", i, joint_positions[i]);
       }
       spin_unlock_unsafe(shared_data.lock);
       break;
