@@ -6,25 +6,7 @@
 
 #include "rotation.h"
 #include "temperature.h"
-
-
-/**
- * I2C Communication
- */
-TwoWire i2c_inst(I2C_SDA, I2C_SCL);
-
-uint8_t i2c_cursor = 0;
-
-uint8_t i2c_virtual_reg[256] = {0};
-uint8_t i2c_virtual_reg_cursor = 0;
-
-enum I2CStatus {
-    MODULE_UNINITIALIZED = 0,
-    MODULE_HOMING = 1,
-    MODULE_READY = 2,
-    MODULE_EMERGENCY_STOPPED = 3,
-    MODULE_ERROR = 4,
-};
+#include "i2c_parser.h"
 
 
 
@@ -36,49 +18,6 @@ uint32_t vac_pull_ms   = 800;                             // pulldown duration t
 enum VacMode : uint8_t { VAC_OFF=0, VAC_PULLDOWN=1, VAC_HOLD=2 };
 volatile VacMode vac_mode = VAC_OFF;
 uint32_t vac_mode_start_ms = 0;
-
-
-
-
-
-
-/**
- * I2C protocol:
- * 
- * The first byte written is the cursor address.
- * Any bytes after will write the register in increasing order.
- * Example: 01 0A 0B 0C
- * will write 0A to address 1, 0B to 2, 0C to 3.
- * The cursor now stays at address 4.
- * 
- * Write one byte to place the cursor before read,
- * same increasing order applies for reading.
- */
-void on_i2c_receive(int num_bytes){
-    int i = 0;
-    while (i2c_inst.available()) {
-        char c = i2c_inst.read();
-        if (i == 0) {
-            // first byte is cursor address
-            i2c_virtual_reg_cursor = c;
-        } else {
-            // write to virtual register
-            i2c_virtual_reg[i2c_virtual_reg_cursor] = c;
-            i2c_virtual_reg_cursor += 1;
-        }
-
-        // add special checks here
-        // such as trigger registers
-
-
-
-        i += 1;
-    }
-}
-
-void on_i2c_request(){
-    i2c_inst.write(i2c_virtual_reg + i2c_virtual_reg_cursor, 256 - i2c_virtual_reg_cursor);
-}
 
 
 
@@ -130,9 +69,20 @@ void setup()
     analogWriteFrequency(PWM_FREQ);
     analogWriteResolution(12);
 
-    i2c_inst.begin(10);
-    i2c_inst.onReceive(on_i2c_receive);
-    i2c_inst.onRequest(on_i2c_request);
+    i2c_parser_init(
+        (i2c_parser_callbacks){
+            .home_rotation = rotation_home,
+            .set_rotation_target = rotation_set,
+            .get_rotation_target = rotation_get,
+            .get_rotation = rotation_get,
+
+            .set_temperature_setpoint = temperature_set,
+            .get_temperature_setpoint = temperature_get,
+            .get_temperature = temperature_get,
+
+            .set_vacuum = nullptr,
+            .get_vacuum = nullptr,
+    });
 
     rotation_init();
     temperature_init();
