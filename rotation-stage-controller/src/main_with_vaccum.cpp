@@ -4,6 +4,14 @@
 
 #include "config.h"
 
+/**
+ * Vacuum (pump)
+ * Drive pump via MOSFET using PWM.
+ */
+#define VAC_PWM_PIN  PB8          
+#define VAC_PWM_FREQ 25000       
+#define VAC_PWM_RES  RESOLUTION_12B_COMPARE_FORMAT
+#define VAC_PWM_MAX  PWM_MAX_VALUE
 
 // Vacuum runtime settings (tuneable by serial commands)
 uint16_t vac_pull_duty = (uint16_t)(VAC_PWM_MAX * 1.00f); // 100%
