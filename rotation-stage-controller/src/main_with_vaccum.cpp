@@ -1,31 +1,46 @@
-// main_with_vaccum.cpp with tentative vacuum control
-
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
 
-SPIClass SensorSPI(SENSOR_MOSI, SENSOR_MISO, SENSOR_SCK);
-static SPISettings MT6835SPISettings(1000000, MSBFIRST, SPI_MODE3);
-#define MT6835_CPR 2097152
+#include "config.h"
 
-int32_t last_sensor_angle = 0;
-int32_t sensor_angle_wraps = 0;
 
+// Vacuum runtime settings (tuneable by serial commands)
 uint16_t vac_pull_duty = (uint16_t)(VAC_PWM_MAX * 1.00f); // 100%
-uint16_t vac_hold_duty = (uint16_t)(VAC_PWM_MAX * 0.35f); // 35% (need tuning)
-uint32_t vac_pull_ms   = 800;  // pulldown duration then switch to hold
+uint16_t vac_hold_duty = (uint16_t)(VAC_PWM_MAX * 0.35f); // 35% default
+uint32_t vac_pull_ms   = 800;                             // pulldown duration then switch to hold
 
 enum VacMode : uint8_t { VAC_OFF=0, VAC_PULLDOWN=1, VAC_HOLD=2 };
 volatile VacMode vac_mode = VAC_OFF;
 uint32_t vac_mode_start_ms = 0;
 
+// Separate serial buffer for vacuum commands
+char vac_buffer[16] = {0};
+uint16_t vac_index = 0;
+
+/**
+ * MT6835 Sensor
+ */
+SPIClass SensorSPI(SENSOR_MOSI, SENSOR_MISO, SENSOR_SCK);
+static SPISettings MT6835SPISettings(1000000, MSBFIRST, SPI_MODE3);
+
+int32_t last_sensor_angle = 0;
+int32_t sensor_angle_wraps = 0;
+
+/**
+ * Endstop & homing
+ */
+uint32_t field_angle_at_home = 0;
+int32_t sensor_angle_at_home = 0;
+
 /**
  * Control
  */
+int32_t angle_lookup_table[LOOKUP_TABLE_SIZE] = {
 
-#define STEPPER_STEPS 50
-#define LOOKUP_TABLE_SIZE (STEPPER_STEPS * 4 + 10) // 10 extra for safety margin
-int32_t angle_lookup_table[LOOKUP_TABLE_SIZE] = {0};
+    88, 73468, 144162, 217968, 299524, 392963, 495124, 587029, 664615, 742582, 832565, 926229, 1011229, 1089670, 1166791, 1242996, 1326204, 1423911, 1534225, 1630769, 1709275, 1787039, 1874922, 1964390, 2046281, 2120404, 2194579, 2267403, 2345279, 2434676, 2542563, 2646433, 2731082, 2808645, 2896512, 2990302, 3074006, 3147290, 3219543, 3289404, 3358997, 3434336, 3522631, 3620457, 3708046, 3784252, 3859348, 3940763, 4023959, 4101832, 4175037, 4244045, 4308229, 4371863, 4442688, 4523186, 4609187, 4699247, 4786158, 4863488, 4940634, 5026535, 5121367, 5211882, 5294927, 5373336, 5456016, 5551607, 5670733, 5780918, 5869442, 5952576, 6042805, 6135536, 6223927, 6305032, 6380345, 6450471, 6527734, 6617766, 6719378, 6818440, 6906505, 6986977, 7069436, 7158361, 7248035, 7328114, 7402903, 7472877, 7546647, 7629311, 7726090, 7829805, 7924167, 8005066, 8086370, 8174526, 8266402, 8349489, 8425870, 8495763, 8567334, 8646064, 8735518, 8835190, 8935453, 9020854, 9099467, 9182957, 9276211, 9364652, 9441650, 9513174, 9583451, 9656781, 9738017, 9829579, 9929908, 10021394, 10099456, 10177055, 10264714, 10356552, 10440692, 10517849, 10592486, 10666321, 10746655, 10839170, 10947146, 11047482, 11129239, 11207409, 11296323, 11391661, 11479294, 11557448, 11633820, 11708819, 11789193, 11881583, 11990945, 12092152, 12175146, 12253381, 12342258, 12435100, 12519133, 12594098, 12667636, 12738055, 12810065, 12890554, 12984124, 13082559, 13168785, 13245039, 13323321, 13410123, 13499515, 13581399, 13658916, 13731973, 13802292, 13876459, 13963549, 14059033, 14152865, 14232997, 14308421, 14384088, 14465157, 14546902, 14626024, 14700258, 14769399, 14836192, 14909552, 14993796, 15085084, 15180083, 15269248, 15347158, 15422824, 15506721, 15597406, 15683206, 15761563, 15836145, 15910973, 15993750, 16089132, 16194566, 16291557, 16372323, 16448764, 16530903, 16618631, 16702163, 16778071, 16850220, 16920916, 16994980, 17076976, 17170750, 17273202, 17364908, 17441941, 17520020, 
+
+};
 
 uint32_t last_time = 0;
 // PID control variables
@@ -112,56 +127,14 @@ void poll_sensor()
 
 int32_t get_total_sensor_angle()
 {
-    return last_sensor_angle + sensor_angle_wraps * MT6835_CPR;
+    return last_sensor_angle + sensor_angle_wraps * MT6835_CPR - sensor_angle_at_home;
 }
 
-/**
- * Vacuum helpers
- */
-void vacuum_apply_pwm(uint16_t duty)
-{
-    duty = constrain(duty, 0, VAC_PWM_MAX - 1);
-    pwm_start(VAC_PWM_PIN, VAC_PWM_FREQ, duty, VAC_PWM_RES);
-}
-
-void vacuum_off()
-{
-    vac_mode = VAC_OFF;
-    vacuum_apply_pwm(0);
-}
-
-void vacuum_start_pulldown()
-{
-    vac_mode = VAC_PULLDOWN;
-    vac_mode_start_ms = millis();
-    vacuum_apply_pwm(vac_pull_duty);
-}
-
-void vacuum_hold()
-{
-    vac_mode = VAC_HOLD;
-    vacuum_apply_pwm(vac_hold_duty);
-}
-
-void vacuum_update()
-{
-    if (vac_mode == VAC_PULLDOWN)
-    {
-        if ((millis() - vac_mode_start_ms) >= vac_pull_ms)
-        {
-            vacuum_hold();
-        }
-    }
-}
-
-/**
- * Motor field angle writer
- */
 void writeFieldAngle(uint32_t angle)
 {
     // use integer angle directly corresponding to pwm value
     // Each quadrant has PWM_MAX_VALUE * 2 steps, full rotation has 4 quadrants
-    angle = angle % (PWM_MAX_VALUE * 8);
+    angle = (angle + field_angle_at_home) % (PWM_MAX_VALUE * 8);
 
     int32_t a_val = 0;
     int32_t b_val = 0;
@@ -220,7 +193,7 @@ void writeFieldAngle(uint32_t angle)
     else
     {
         pwm_start(MOT_B_POS, PWM_FREQ, 0, PWM_RESOLUTION);
-        pwm_start(MOT_B_NEG, PWM_FREQ, -b_val, PWM_RESOLUTION);
+        pwm_start(MOT_B_NEG, -b_val, PWM_RESOLUTION);
     }
 }
 
@@ -279,7 +252,157 @@ uint32_t sensorAngleToFieldAngle(int32_t sensor_angle)
     int32_t angle_b = angle_lookup_table[closest_index + 1];
     float ratio = (sensor_angle - angle_a) / (float)(angle_b - angle_a);
 
+    // return closest_index * PWM_MAX_VALUE * 2 + (sensor_angle - angle_a) * PWM_MAX_VALUE * 2 / (angle_b - angle_a);
     return closest_index * PWM_MAX_VALUE * 2 + ratio * PWM_MAX_VALUE * 2;
+}
+
+uint8_t home_rotation(){
+    // rotate until endstop is triggered, then set current angle as home (0)
+    uint32_t current_angle = 0;
+    uint8_t home_error = 0;
+    while (digitalRead(ROTATION_ENDSTOP) == HIGH)
+    {
+        if (current_angle > PWM_MAX_VALUE * 8 * 50) {
+            home_error = 1;
+            break;
+        }
+        writeFieldAngle(current_angle);
+        current_angle += 256;
+
+        delay(1);
+    }
+
+    if (home_error){
+        return 1;
+    }
+
+    while (digitalRead(ROTATION_ENDSTOP) == LOW)
+    {
+        writeFieldAngle(current_angle);
+        current_angle -= 10;
+
+        delay(1);
+    }
+
+    while (digitalRead(ROTATION_ENDSTOP) == HIGH)
+    {
+        writeFieldAngle(current_angle);
+        current_angle += 1;
+
+        delay(1);
+    }
+
+    field_angle_at_home = current_angle;
+    sensor_angle_wraps = 0;
+    sensor_angle_at_home = read_raw_angle();
+
+    return 0;
+}
+
+// -------------------- ADDED: Vacuum functions --------------------
+void vacuum_apply_pwm(uint16_t duty)
+{
+    duty = constrain(duty, 0, VAC_PWM_MAX - 1);
+    pwm_start(VAC_PWM_PIN, VAC_PWM_FREQ, duty, VAC_PWM_RES);
+}
+
+void vacuum_off()
+{
+    vac_mode = VAC_OFF;
+    vacuum_apply_pwm(0);
+}
+
+void vacuum_start_pulldown()
+{
+    vac_mode = VAC_PULLDOWN;
+    vac_mode_start_ms = millis();
+    vacuum_apply_pwm(vac_pull_duty);
+}
+
+void vacuum_hold()
+{
+    vac_mode = VAC_HOLD;
+    vacuum_apply_pwm(vac_hold_duty);
+}
+
+void vacuum_update()
+{
+    if (vac_mode == VAC_PULLDOWN)
+    {
+        if ((millis() - vac_mode_start_ms) >= vac_pull_ms)
+        {
+            vacuum_hold();
+        }
+    }
+}
+
+// Process ONLY vacuum lines that start with 'V' and end with '\n'.
+// Commands:
+//   V1        -> pulldown then hold
+//   V0        -> off
+//   VHxx      -> hold duty percent 0-100
+//   VPxx      -> pull duty percent 0-100
+//   VTxxxx    -> pulldown time ms 0-10000
+void vacuum_serial_service()
+{
+    // Only handle if the next char is 'V'
+    if (Serial.available() <= 0) return;
+    if (Serial.peek() != 'V') return;
+
+    while (Serial.available() > 0)
+    {
+        char c = Serial.read();
+
+        if (c == '\n')
+        {
+            vac_buffer[vac_index] = '\0';
+
+            // Minimal parsing
+            if (vac_index >= 2 && vac_buffer[0] == 'V')
+            {
+                if (vac_buffer[1] == '1')
+                {
+                    vacuum_start_pulldown();
+                }
+                else if (vac_buffer[1] == '0')
+                {
+                    vacuum_off();
+                }
+                else if (vac_buffer[1] == 'H')
+                {
+                    int pct = 0;
+                    for (int n = 2; n < (int)vac_index; n++) pct = pct * 10 + (vac_buffer[n] - '0');
+                    pct = constrain(pct, 0, 100);
+                    vac_hold_duty = (uint16_t)(VAC_PWM_MAX * (pct / 100.0f));
+                    if (vac_mode == VAC_HOLD) vacuum_apply_pwm(vac_hold_duty);
+                }
+                else if (vac_buffer[1] == 'P')
+                {
+                    int pct = 0;
+                    for (int n = 2; n < (int)vac_index; n++) pct = pct * 10 + (vac_buffer[n] - '0');
+                    pct = constrain(pct, 0, 100);
+                    vac_pull_duty = (uint16_t)(VAC_PWM_MAX * (pct / 100.0f));
+                    if (vac_mode == VAC_PULLDOWN) vacuum_apply_pwm(vac_pull_duty);
+                }
+                else if (vac_buffer[1] == 'T')
+                {
+                    int ms = 0;
+                    for (int n = 2; n < (int)vac_index; n++) ms = ms * 10 + (vac_buffer[n] - '0');
+                    vac_pull_ms = constrain(ms, 0, 10000);
+                }
+            }
+
+            vac_index = 0;
+            break; // line consumed; return to loop()
+        }
+        else
+        {
+            if (vac_index < 15)
+            {
+                vac_buffer[vac_index++] = c;
+            }
+        }
+    }
 }
 
 void setup()
@@ -290,14 +413,16 @@ void setup()
     pinMode(SENSOR_SS, OUTPUT);
     digitalWrite(SENSOR_SS, HIGH);
 
+    pinMode(ROTATION_ENDSTOP, INPUT_FLOATING);
+
     // Vacuum init
     pinMode(VAC_PWM_PIN, OUTPUT);
     vacuum_off();
 
-    // Serial.println("Building angle lookup table...");
-    buildAngleLookupTable();
-    // Serial.println("Angle lookup table:");
-    printAngleLookupTable();
+    home_rotation();
+
+    // buildAngleLookupTable();
+    // printAngleLookupTable();
 }
 
 int i = 0;
@@ -308,6 +433,7 @@ uint16_t input_index = 0;
 void loop()
 {
     // calculate dt
+
     uint32_t current_time = micros();
     uint32_t dt = 0;
     if (current_time < last_time) {
@@ -321,84 +447,41 @@ void loop()
     // poll sensor and get angle
     poll_sensor();
 
-    // vacuum state machine (pulldown -> hold)
+    // vacuum state machine + serial service
     vacuum_update();
+    vacuum_serial_service();
 
-    // Serial parsing 
     if (Serial.available() > 0)
     {
         char c = Serial.read();
         if (c == '\n')
         {
             input_buffer[input_index] = '\0';
-
-            // Vacuum commands:
-            //  V1        -> start pulldown then hold
-            //  V0        -> off
-            //  VHxx      -> set hold duty percent (0-100), e.g. VH35
-            //  VPxx      -> set pull duty percent (0-100), e.g. VP100
-            //  VTxxxx    -> set pulldown time ms, e.g. VT800
-            if (input_index >= 2 && input_buffer[0] == 'V')
+            // input in degree
+            // manual parse to avoid large size
+            int temp = 0;
+            for (int n = 0; n < input_index; n++)
             {
-                if (input_buffer[1] == '1')
-                {
-                    vacuum_start_pulldown();
-                }
-                else if (input_buffer[1] == '0')
-                {
-                    vacuum_off();
-                }
-                else if (input_buffer[1] == 'H')
-                {
-                    int pct = 0;
-                    for (int n = 2; n < (int)input_index; n++) pct = pct * 10 + (input_buffer[n] - '0');
-                    pct = constrain(pct, 0, 100);
-                    vac_hold_duty = (uint16_t)(VAC_PWM_MAX * (pct / 100.0f));
-                    if (vac_mode == VAC_HOLD) vacuum_apply_pwm(vac_hold_duty);
-                }
-                else if (input_buffer[1] == 'P')
-                {
-                    int pct = 0;
-                    for (int n = 2; n < (int)input_index; n++) pct = pct * 10 + (input_buffer[n] - '0');
-                    pct = constrain(pct, 0, 100);
-                    vac_pull_duty = (uint16_t)(VAC_PWM_MAX * (pct / 100.0f));
-                    if (vac_mode == VAC_PULLDOWN) vacuum_apply_pwm(vac_pull_duty);
-                }
-                else if (input_buffer[1] == 'T')
-                {
-                    int ms = 0;
-                    for (int n = 2; n < (int)input_index; n++) ms = ms * 10 + (input_buffer[n] - '0');
-                    vac_pull_ms = constrain(ms, 0, 10000);
-                }
-
-                input_index = 0;
+                temp = temp * 10 + (input_buffer[n] - '0');
             }
-            else
+            
+            float input_angle = temp / 100.0;
+
+            float rad_angle = input_angle / 180.0 * PI;
+            while (rad_angle < 0)
             {
-                // Angle input in degree*100
-                int temp = 0;
-                for (int n = 0; n < (int)input_index; n++)
-                {
-                    temp = temp * 10 + (input_buffer[n] - '0');
-                }
-
-                float input_angle = temp / 100.0f;
-
-                float rad_angle = input_angle / 180.0f * PI;
-                while (rad_angle < 0) rad_angle += 2 * PI;
-
-                // convert using the lookup table to counter any magnetic non-linearity
-                // a full rotation is index 200
-                float index_float = rad_angle / (2 * PI) * 200.0f;
-                uint32_t index = (uint32_t)(index_float);
-                float ratio = index_float - index;
-                index = index % 200;
-
-                target_sensor_angle = angle_lookup_table[index] * (1 - ratio) +
-                                      angle_lookup_table[(index + 1) % 200] * ratio;
-
-                input_index = 0;
+                rad_angle += 2 * PI;
             }
+            // convert using the lookup table to counter any magnetic non-linearity
+            // a full rotation is index 200
+            float index_float = rad_angle / (2 * PI) * 200;
+            uint32_t index = (uint32_t)(index_float);
+            float ratio = index_float - index;
+            index = index % 200;
+
+            target_sensor_angle = angle_lookup_table[index] * (1 - ratio) + angle_lookup_table[(index + 1) % 200] * ratio;
+
+            input_index = 0;
         }
         else if (input_index < 15)
         {
@@ -407,36 +490,38 @@ void loop()
         }
     }
 
-    // ---------------- Control loop ----------------
     int32_t sensor_angle = get_total_sensor_angle();
     int32_t diff = target_sensor_angle - sensor_angle;
 
-    i_term += ((float)diff / MT6835_CPR) * dt / 1000000.0f * 500.0f; // integral term, with time in seconds
-    i_term = constrain(i_term, -0.5f, 0.5f); // anti-windup
+    i_term += ((float)diff / MT6835_CPR) * dt / 1000000.0 * 500; // integral term, with time in seconds
+    i_term = constrain(i_term, -0.5, 0.5); // anti-windup
 
-    float d_term = (float)(diff - last_diff) / MT6835_CPR / (dt / 1000000.0f) * 2.0f; // derivative term
+    float d_term = (float)(diff - last_diff) / MT6835_CPR / (dt / 1000000.0) * 2; // derivative term
     last_diff = diff;
-    d_term = constrain(d_term, -0.5f, 0.5f); // limit derivative term
-    filtered_d_term = filtered_d_term * 0.99f + d_term * 0.01f; // low-pass filter for derivative term
+    d_term = constrain(d_term, -0.5, 0.5); // limit derivative term
+    filtered_d_term = filtered_d_term * 0.99 + d_term * 0.01; // low-pass filter for derivative term
 
-    // NOTE: your original line had a stray semicolon before "- filtered_d_term;"
-    // I’m preserving your intent: torque = P + I - D
-    float torque = ((float)diff / MT6835_CPR) * 20.0f + i_term - filtered_d_term;
-
-    if (torque < -1.0f) torque = -1.0f;
-    else if (torque > 1.0f) torque = 1.0f;
-
-    int32_t field_angle_diff = (int32_t)(torque * PWM_MAX_VALUE * 2); // max torque corresponds to 90 degree field angle difference
+    float torque = ((float)diff / MT6835_CPR) * 20 + i_term; - filtered_d_term;
+    if (torque < -1)
+    {
+        torque = -1;
+    }
+    else if (torque > 1)
+    {
+        torque = 1;
+    }
+    
+    int32_t field_angle_diff = torque * PWM_MAX_VALUE * 2; // max torque corresponds to 90 degree field angle difference
     uint32_t field_angle = sensorAngleToFieldAngle(sensor_angle) + field_angle_diff;
 
     writeFieldAngle(field_angle);
 
     i += 1;
-    if (i >= 100)
+    if (i >= 500)
     {
         i = 0;
-        Serial.println(dt);
-        Serial.println(torque);
-        Serial.println((float)diff / MT6835_CPR * 360, 5);
+        // Serial.println(dt);
+        // Serial.println(torque);
+        // Serial.println((float)diff / MT6835_CPR * 360, 5);
     }
 }
