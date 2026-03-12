@@ -100,9 +100,9 @@ void RobotJoint::update(float dt, float one_over_dt) {
 }
 
 void RobotJoint::update_target(float p, float v) {
-  // if (position != p || velocity != v){
-  //   LOG_DEBUG("Updating Joint %d to new pos %f and vel %f", joint_idx, p, v);
-  // }
+  if (p != position){
+    // LOG_DEBUG("Updating Joint %d target to pos %f", p);
+  }
   position = p;
   velocity = v;
 }
@@ -366,9 +366,9 @@ void Robot::set_pose(const Pose6DF& pose) {
     // Attempt to acquire spinlock non-blocking and set new target data for the servo loops
     if (spin_try_lock_unsafe(shared_data.lock)) {
       for (int i = 0; i < NUM_JOINTS; i++) {
+        LOG_DEBUG("Joint-%i: set pose -> angle from %f to %f", i, shared_data.joint_target_positions[i], joint_positions[i]);
         shared_data.joint_target_positions[i] = joint_positions[i];
         shared_data.joint_target_velocities[i] = 0.0f;
-        LOG_DEBUG("Joint-%i: set pose -> angle %f", i, joint_positions[i]);
       }
       spin_unlock_unsafe(shared_data.lock);
       break;
