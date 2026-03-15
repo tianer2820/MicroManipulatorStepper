@@ -56,15 +56,58 @@ static void on_i2c_receive(int num_bytes){
         }
 
         // add special checks here
-        // such as trigger registers
-
-
 
         i += 1;
     }
+
+    // check trigger registers
+    if (i2c_virtual_reg[0xFF] != 0)
+    {
+        uint8_t trigger = i2c_virtual_reg[0xFF];
+        if (trigger & 0b0001) {
+            // apply rotation
+            uint32_t new_rot_target;
+            memcpy(&new_rot_target, &i2c_virtual_reg[10], sizeof(uint32_t));
+            parser_callbacks.set_rotation_target(new_rot_target / 360000.0f * 2 * PI);
+        }
+        if (trigger & 0b0010) {
+            // apply temperature
+            uint32_t new_temp_setpoint;
+            memcpy(&new_temp_setpoint, &i2c_virtual_reg[20], sizeof(uint32_t));
+            parser_callbacks.set_temperature_setpoint(new_temp_setpoint / 50000.0f);
+        }
+        if (trigger & 0b0100) {
+            // apply vacuum
+            parser_callbacks.set_vacuum(i2c_virtual_reg[30] == 0 ? 0 : 4095);
+        }
+    }
+    
 }
 
 static void on_i2c_request(){
+    // update virtual register before read
+    float rot_target = parser_callbacks.get_rotation_target();
+    uint32_t rot_target_int = (uint32_t)(rot_target / (2 * PI) * 360000);
+    memcpy(&i2c_virtual_reg[10], &rot_target_int, sizeof(uint32_t));
+
+    float rot_current = parser_callbacks.get_rotation();
+    uint32_t rot_current_int = (uint32_t)(rot_current / (2 * PI) * 360000);
+    memcpy(&i2c_virtual_reg[14], &rot_current_int, sizeof(uint32_t));
+
+
+    float temp_setpoint = parser_callbacks.get_temperature_setpoint();
+    uint32_t temp_setpoint_int = (uint32_t)(temp_setpoint * 50000);
+    memcpy(&i2c_virtual_reg[20], &temp_setpoint_int, sizeof(uint32_t));
+
+    float temp_current = parser_callbacks.get_temperature();
+    uint32_t temp_current_int = (uint32_t)(temp_current * 50000);
+    memcpy(&i2c_virtual_reg[24], &temp_current_int, sizeof(uint32_t));
+
+    uint16_t vacuum = parser_callbacks.get_vacuum();
+    i2c_virtual_reg[30] = vacuum == 0 ? 0 : 1;
+
+
+    // write buffer
     i2c_inst.write(i2c_virtual_reg + i2c_virtual_reg_cursor, 256 - i2c_virtual_reg_cursor);
 }
 
