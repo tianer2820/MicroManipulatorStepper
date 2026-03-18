@@ -25,6 +25,7 @@
 #define MT6835_STATUS_WEAKFIELD 0x02
 #define MT6835_STATUS_UNDERVOLT 0x04
 #define MT6835_CRC_ERROR 0x08
+#define MT6835_CRC_ERROR_RETURN -1
 
 #define MT6835_WRITE_ACK 0x55
 
@@ -206,7 +207,7 @@ class MT6835Encoder {
       int32_t last_raw_angle = 0;
       AbsRawAngleType abs_raw_angle = 0;
 
-      AbsRawAngleType update_abs_raw_angle(int32_t raw_angle);
+      AbsRawAngleType update_abs_raw_angle(AbsRawAngleType raw_angle);
 
       void spi_begin_transaction();
       void spi_transfer(uint8_t* data, size_t length);

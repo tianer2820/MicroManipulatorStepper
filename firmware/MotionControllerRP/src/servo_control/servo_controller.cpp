@@ -72,8 +72,10 @@ const LookupTable& ServoController::get_pos_to_field_lut() const {
 
 
 void ServoController::update(float target_motor_pos, float dt, float one_over_dt) {
+
   if(encoder_update_enabled == false)
     return;
+
 
   // read encoder
   int32_t encoder_angle_raw = encoder.read_abs_angle_raw();
@@ -97,6 +99,7 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
   // set new field direction
   // motor_driver.set_amplitude(std::clamp(abs(output*10.0f), 0.1f, 0.5f), false);
   if(motor_update_enabled) {
+    //LOG_INFO("f: %ld, o: %ld, er: %ld, mp: %lld", (long)(field_angle*1000), (long)(output*1000), (long)(encoder_angle_raw*1000),  (long long)(motor_pos*1000000));
     //LOG_DEBUG("Motor update enabled and setting field angle to %f", field_angle + output);
     motor_driver.set_field_angle(field_angle + output);
   } else {

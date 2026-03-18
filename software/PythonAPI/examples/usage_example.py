@@ -6,7 +6,7 @@ import csv
 oms = OpenMicroStageInterface(show_communication=True, show_log_messages=True)
 oms.connect('COM5')
 oms.read_device_state_info()
-
+import os
 
 
 AXIS_CALIBRATION = 1
@@ -26,8 +26,15 @@ if ENABLE_CALIBRATION:
     sys.exit(0)
 
 if ENABLE_MOVE or __name__ == "__main__":
-    input("press to home")
+    import sys
+    #input("press to home")
+    try:
+        os.remove("thing_homed")
+    except FileNotFoundError:
+        pass
+
     oms.home()
+    open("thing_homed", "w").close()
 
     # run this once to calibrate joints
     #for i in range(3): oms.calibrate_joint(i, save_result=True)
