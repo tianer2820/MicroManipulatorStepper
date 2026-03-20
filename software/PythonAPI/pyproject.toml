@@ -33,6 +33,16 @@ dev = [
     "pytest-cov",
     "ruff",
 ]
+camera_comparer = [
+    "typer[all]",
+    "pypylon",
+    "pillow",
+]
+image_comparer = [
+    "typer",
+    "opencv-python",
+    "numpy"
+]
 
 [project.urls]
 Homepage = "https://github.com/HonakerM/MicroManipulatorStepper"
