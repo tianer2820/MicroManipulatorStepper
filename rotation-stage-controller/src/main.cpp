@@ -12,7 +12,7 @@
 
 // Vacuum runtime settings (tuneable by serial commands)
 uint16_t vac_pull_duty = (uint16_t)(VAC_PWM_MAX * 1.00f); // 100%
-uint16_t vac_hold_duty = (uint16_t)(VAC_PWM_MAX * 0.35f); // 35% default
+uint16_t vac_hold_duty = (uint16_t)(VAC_PWM_MAX * 0.90f); // 90% default
 uint32_t vac_pull_ms   = 800;                             // pulldown duration then switch to hold
 
 enum VacMode : uint8_t { VAC_OFF=0, VAC_PULLDOWN=1, VAC_HOLD=2 };
