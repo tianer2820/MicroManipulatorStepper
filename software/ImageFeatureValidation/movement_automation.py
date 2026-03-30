@@ -124,17 +124,17 @@ def sanitize_filename(x, y, z):
 
 def load_relative_points(csv_file):
     """
-    Load relative x,y,z points from a CSV file.
+    Load relative x,y points from a CSV file.
     
     Expected CSV format (with or without header):
-        x,y,z
-        0,0,0
-        1,0,0
-        1,1,0
+        x,y,feed
+        0,0,100
+        1,0,100
+        1,1,100
         ...
     
     :param csv_file: Path to the CSV file
-    :return: List of tuples [(x, y, z), ...]
+    :return: List of tuples [(x, y, feed), ...]
     """
     points = []
     try:
@@ -144,8 +144,8 @@ def load_relative_points(csv_file):
             first_row = next(reader)
             try:
                 # Try to parse as floats
-                x, y, z = map(float, first_row)
-                points.append((x, y, z))
+                x, y, feed = map(float, first_row)
+                points.append((x, y, feed))
             except ValueError:
                 # First row is header, skip it
                 pass
@@ -154,8 +154,8 @@ def load_relative_points(csv_file):
             for row in reader:
                 if len(row) >= 3:
                     try:
-                        x, y, z, feed = map(float, row[:4])
-                        points.append((x, y, z, feed))
+                        x, y, feed = map(float, row[:3])
+                        points.append((x, y, feed))
                     except ValueError:
                         print(f"Warning: Skipping invalid row: {row}")
                         continue
@@ -182,7 +182,7 @@ def main(
     """Move OpenMicroStageInterface stage in a pattern and capture images.
     
     Args:
-        csv_file: CSV file with relative x,y,z coordinates (one point per row).
+        csv_file: CSV file with relative x,y coordinates and feed rate (x,y,feed per row).
         output: Output folder for images. Defaults to "captures".
         com_port: Serial port for OpenMicroStageInterface. Defaults to "COM5".
         baud_rate: Baud rate for serial connection. Defaults to 921600.
@@ -191,6 +191,12 @@ def main(
         screenshots: Number of screenshots to take at each location. Defaults to 1.
         show_communication: Show OpenMicroStageInterface communication messages. Defaults to False.
         show_logs: Show OpenMicroStageInterface log messages. Defaults to False.
+    
+    The script will:
+    1. Optionally home the stage
+    2. Prompt for starting X,Y,Z position
+    3. Move through each point keeping Z constant
+    4. Capture images at each location in folder structure: idx_startx_starty_endx_endy
     """
 
     # Create output directory
@@ -225,9 +231,44 @@ def main(
         return
 
     try:
-        # Get initial position
-        x_start, y_start, z_start = oms.read_current_position()
-        print(f"Start position: ({x_start:.6f}, {y_start:.6f}, {z_start:.6f})")
+        # Prompt to home the stage
+        print("\nWould you like to home the stage first?")
+        home_response = input("Press 'h' to home or any other key to skip: ").strip().lower()
+        if home_response == 'h':
+            print("Homing stage...")
+            oms.home()
+            print("Stage homed successfully!")
+        
+        # Get or set starting position
+        while True:
+            try:
+                x, y, z = oms.read_current_position()
+                print(f"\nCurrent position -> X:{x:.4f}, Y:{y:.4f}, Z:{z:.4f}")
+
+                user_input = input("Enter target X,Y,Z (or 's' to save starting info and continue):")
+
+                if user_input.lower() == 's':
+                    break
+                x_str, y_str, z_str = user_input.split(',')
+                if("+" in user_input):
+                    user_input = user_input.replace("+", ",")
+                x_target = float(x_str.strip())
+                y_target = float(y_str.strip())
+                z_target = float(z_str.strip())
+
+                print(f"Moving to X:{x_target}, Y:{y_target}, Z:{z_target}")
+                oms.set_pose(x_target, y_target, z_target)
+                oms.wait_for_stop()
+
+            except ValueError:
+                print("Invalid input. Use format: X,Y,Z or X+Y+Z")
+            except KeyboardInterrupt:
+                print("\nExiting free move mode.")
+                break
+        
+        # Verify position
+        x_start, y_start, z_current = oms.read_current_position()
+        print(f"Current position: ({x_start:.6f}, {y_start:.6f}, {z_current:.6f})")
 
         print(f"\nStarting movement with {len(relative_points)} points...")
         print(f"Screenshots per location: {screenshots}")
@@ -237,13 +278,13 @@ def main(
         prev_x, prev_y = x_start, y_start
         
         # Move through each relative point and capture images
-        for idx, (rel_x, rel_y, rel_z, feed) in enumerate(relative_points):
-            # Calculate absolute position
+        for idx, (rel_x, rel_y, feed) in enumerate(relative_points):
+            # Calculate absolute position (XY only, keep Z constant)
             abs_x = x_start + rel_x
             abs_y = y_start + rel_y
-            abs_z = z_start + rel_z
+            abs_z = z_current  # Keep Z constant
 
-            print(f"[{idx + 1}/{len(relative_points)}] Moving to relative ({rel_x}, {rel_y}, {rel_z} {feed})")
+            print(f"[{idx + 1}/{len(relative_points)}] Moving to relative ({rel_x}, {rel_y}) with feed {feed}")
             print(f"  Absolute position: ({abs_x:.6f}, {abs_y:.6f}, {abs_z:.6f})")
 
             # Move stage
@@ -255,7 +296,7 @@ def main(
             print(f"  Final position: ({final_x:.6f}, {final_y:.6f}, {final_z:.6f})")
 
             # Create folder with format: idx_startx_starty_endx_endy
-            # Convert coordinates to filename-safe format (replace - with +, . with d)
+            # Convert coordinates to filename-safe format (replace . with d)
             start_x_str = f"{prev_x:+.4f}".replace('.', 'd')
             start_y_str = f"{prev_y:+.4f}".replace('.', 'd')
             end_x_str = f"{final_x:+.4f}".replace('.', 'd')
@@ -299,15 +340,15 @@ def main(
                     filename = "000.png"
                     filepath = folder_path / filename
                     
-                    from PIL import Image
                     img = Image.fromarray(frame, 'RGB')
                     img.save(str(filepath))
                     print(f"  Captured: {folder_name}/{filename}")
                 else:
                     print(f"  Error: Failed to capture image")
             
-            # Update previous position for next iteration
+            # Update previous position for next iteration (XY only)
             prev_x, prev_y = final_x, final_y
+            z_current = final_z # If it moves during other movement
 
         print("\nCapture complete!")
 
