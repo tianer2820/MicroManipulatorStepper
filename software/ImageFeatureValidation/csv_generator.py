@@ -12,7 +12,8 @@ feed_rates = [50, 25, 10, 5, 1, 0.1]
 # Generate all test points
 rows = [['x', 'y', 'feed', 'delay']]  # Header
 
-test_points = []
+# Start with a move of 0 so we have some positional data to start with
+test_points = [(0.0,0.0,10,None)]
 
 # Track absolute position
 current_x, current_y = 0.0, 0.0

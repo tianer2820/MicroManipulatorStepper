@@ -221,7 +221,7 @@ def load_relative_points(csv_file):
         for abs_x, abs_y, feed, delay in absolute_points:
             rel_x = abs_x - prev_x
             rel_y = abs_y - prev_y
-            points.append((rel_x, rel_y, feed, delay))
+            points.append((rel_x, rel_y, abs_x, abs_y, feed, delay))
             prev_x, prev_y = abs_x, abs_y
 
         print(f"Loaded {len(points)} points from {csv_file}")
@@ -245,16 +245,16 @@ def visualize_path(csv_file: str) -> None:
         return
     
     # Convert relative movements back to absolute coordinates for visualization
-    absolute_x = [0.0]
-    absolute_y = [0.0]
+    absolute_x = [pos[2] for pos in points]
+    absolute_y = [pos[3] for pos in points]
     current_x, current_y = 0.0, 0.0
     
-    for rel_x, rel_y, feed, delay in points:
+    for idx, (rel_x, rel_y, abs_x, abs_y, feed, delay) in enumerate(points):
         current_x += rel_x
         current_y += rel_y
-        absolute_x.append(current_x)
-        absolute_y.append(current_y)
-    
+        assert abs(absolute_x[idx] - current_x) < 1e-9, f"X coordinate mismatch at point {idx}. Expected {absolute_x[idx]}, got {current_x}"
+        assert abs(absolute_y[idx] - current_y) < 1e-9, f"Y coordinate mismatch at point {idx}. Expected {absolute_y[idx]}, got {current_y}"
+
     # Create the plot
     fig, ax = plt.subplots(figsize=(12, 10))
     
@@ -426,14 +426,20 @@ def main(
         prev_x, prev_y = x_start, y_start
         
         # Move through each relative point and capture images
-        for idx, (rel_x, rel_y, feed, line_delay) in enumerate(relative_points):
+        for idx, (rel_x, rel_y,  abs_x, abs_y, feed, line_delay) in enumerate(relative_points):
             # Use per-line delay if provided, otherwise use default
             current_delay = line_delay if line_delay is not None else delay
             
-            # Calculate absolute position (XY only, keep Z constant)
-            abs_x = x_start + rel_x
-            abs_y = y_start + rel_y
+            # Calculate absolute position (XY only, keep Z constant). If 0,0 go back to the original
+            # starting position
+            if(abs_x, abs_y) == (0, 0):
+                abs_x = x_start
+                abs_y = y_start
+            else:
+                abs_x = prev_x + rel_x
+                abs_y = prev_y + rel_y
             abs_z = z_current  # Keep Z constant
+            expected_distance = np.sqrt((rel_x ** 2) + (rel_y ** 2))
 
             print(f"[{idx + 1}/{len(relative_points)}] Moving to relative ({rel_x}, {rel_y}) with feed {feed}")
             print(f"  Absolute position: ({abs_x:.6f}, {abs_y:.6f}, {abs_z:.6f})")
@@ -448,12 +454,13 @@ def main(
 
             # Create folder with format: idx_startx_starty_endx_endy
             # Convert coordinates to filename-safe format (replace . with d)
-            start_x_str = f"{prev_x:+.4f}".replace('.', 'd')
-            start_y_str = f"{prev_y:+.4f}".replace('.', 'd')
-            end_x_str = f"{final_x:+.4f}".replace('.', 'd')
-            end_y_str = f"{final_y:+.4f}".replace('.', 'd')
+            expected_distance_str = f"{expected_distance:.9f}".replace('.', 'd')
+            start_x_str = f"{prev_x:+.9f}".replace('.', 'd')
+            start_y_str = f"{prev_y:+.9f}".replace('.', 'd')
+            end_x_str = f"{final_x:+.9f}".replace('.', 'd')
+            end_y_str = f"{final_y:+.9f}".replace('.', 'd')
             
-            folder_name = f"{idx}_{start_x_str}_{start_y_str}_{end_x_str}_{end_y_str}"
+            folder_name = f"{idx}_{expected_distance_str}_{start_x_str}_{start_y_str}_{end_x_str}_{end_y_str}"
             folder_path = output_dir / folder_name
             folder_path.mkdir(parents=True, exist_ok=True)
             
@@ -497,9 +504,8 @@ def main(
                 else:
                     print(f"  Error: Failed to capture image")
             
-            # Update previous position for next iteration (XY only)
-            prev_x, prev_y = final_x, final_y
-            z_current = final_z # If it moves during other movement
+            # Update previous position for next iteration (XY only and keep z incase it moved)
+            prev_x, prev_y, z_current = oms.read_current_position()
 
         print("\nCapture complete!")
 

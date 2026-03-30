@@ -8,6 +8,7 @@ from datetime import datetime
 
 APP = Typer()
 
+DEFAULT_EXCEL_OUTPUT = Path("comparison_results.xlsx")
 DEFAULT_MATCH_LIMIT = 0.8
 DEFAULT_RANSAC_THRESHOLD = 5
 MAX_WIDTH = 1600
@@ -773,29 +774,38 @@ def compare_locations(
         except Exception as e:
             print(f"Could not visualize matches: {e}")
 
+@dataclass
+class FolderInfo:
+    idx: int
+    expected: float
+    startx: float
+    starty: float
+    endx: float
+    endy: float
 
-def parse_position(folder_name: str) -> tuple:
+def parse_position(folder_name: str) -> FolderInfo:
     """
-    Parse folder name of format 'idx_startx_starty_endx_endy' into coordinates.
-    Returns (idx, startx, starty, endx, endy) as floats, handling decimal notation like '0+1' -> 0.1
+    Parse folder name of format 'idx_expected_startx_starty_endx_endy' into coordinates.
+    Returns a FolderInfo object with all parsed values, handling decimal notation like '0+1' -> 0.1
     """
     parts = folder_name.split('_')
-    if len(parts) != 5:
-        raise ValueError(f"Invalid folder format: {folder_name}. Expected 'idx_startx_starty_endx_endy'")
+    if len(parts) != 6:
+        raise ValueError(f"Invalid folder format: {folder_name}. Expected 'idx_expected_startx_starty_endx_endy'")
     
     try:
         idx = int(parts[0])
         # Convert notation like '0+1' to '0.1'
-        startx = float(parts[1].replace('d', '.'))
-        starty = float(parts[2].replace('d', '.'))
-        endx = float(parts[3].replace('d', '.'))
-        endy = float(parts[4].replace('d', '.'))
-        return (idx, startx, starty, endx, endy)
+        expected = float(parts[1].replace('d', '.'))
+        startx = float(parts[2].replace('d', '.'))
+        starty = float(parts[3].replace('d', '.'))
+        endx = float(parts[4].replace('d', '.'))
+        endy = float(parts[5].replace('d', '.'))
+        return FolderInfo(idx, expected, startx, starty, endx, endy)
     except (ValueError, IndexError) as e:
         raise ValueError(f"Could not parse folder name {folder_name}: {e}")
 
 
-def calculate_xy_distance(pos1: tuple, pos2: tuple) -> float:
+def calculate_xy_distance(pos1: FolderInfo, pos2: FolderInfo) -> float:
     """
     Calculate 2D distance between two positions in micrometers.
     Positions are (idx, startx, starty, endx, endy) tuples in mm, returns distance in µm.
@@ -814,7 +824,7 @@ def calculate_xy_distance(pos1: tuple, pos2: tuple) -> float:
 @APP.command()
 def analyze_movements(
     root_dir: Path,
-    excel_output: Path = None,
+    excel_output: Path = DEFAULT_EXCEL_OUTPUT,
     pixel_to_um: float = DEFAULT_PIXEL_UM,
     camera_height_um: float = DEFAULT_CAMERA_HEIGHT_UM,
     fov_deg: float = DEFAULT_FOV_DEG,
@@ -841,7 +851,7 @@ def analyze_movements(
     position_folders = sorted([
         d for d in root_dir.iterdir() 
         if d.is_dir() and '_' in d.name
-    ], key=lambda p: parse_position(p.name)[0])
+    ], key=lambda p: parse_position(p.name).idx)
     
     if len(position_folders) < 2:
         raise ValueError(f"Need at least 2 position folders, found {len(position_folders)}")
@@ -849,23 +859,23 @@ def analyze_movements(
     print(f"\nFound {len(position_folders)} position folders")
     
     # Parse all positions
-    positions = {}
+    positions: dict[Path, FolderInfo] = {}
     for folder in position_folders:
         try:
             pos = parse_position(folder.name)
             positions[folder] = pos
-            print(f"  {folder.name} → idx={pos[0]}, ({pos[1]:.1f},{pos[2]:.1f}) to ({pos[3]:.1f},{pos[4]:.1f})mm")
+            print(f"  {folder.name} → idx={pos.idx}, ({pos.startx:.5f},{pos.starty:.5f}) to ({pos.endx:.5f},{pos.endy:.5f})mm for a movement of {pos.expected:.5f}mm")
         except ValueError as e:
             print(f"  Skipping {folder.name}: {e}")
             continue
     
     # Compare sequential positions
-    movement_results = []
+    movement_results: list[MovementResult] = []
     print("\n" + "="*80)
     print("COMPARING SEQUENTIAL POSITIONS")
     print("="*80)
     
-    sorted_folders = sorted(positions.keys(), key=lambda f: positions[f][0])
+    sorted_folders: list[Path] = sorted(positions.keys(), key=lambda f: positions[f][0])
     
     for i in range(len(sorted_folders) - 1):
         folder1 = sorted_folders[i]
@@ -874,7 +884,7 @@ def analyze_movements(
         pos2 = positions[folder2]
         
         # Calculate expected distance (XY only, in µm)
-        expected_distance = calculate_xy_distance(pos1, pos2)
+        expected_distance = pos2.expected
         
         # Get all images from each folder for comparison
         image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
@@ -914,8 +924,8 @@ def analyze_movements(
             difference = actual_distance - expected_distance
             
             result = MovementResult(
-                from_position=folder1.name,
-                to_position=folder2.name,
+                from_position=f"({pos2.startx:.9f},{pos2.starty:.9f})",
+                to_position=f"({pos2.endx:.9f},{pos2.endy:.9f})",
                 expected_distance_um=expected_distance,
                 actual_distance_um=actual_distance,
                 difference_um=difference,
@@ -940,7 +950,7 @@ def analyze_movements(
     print("STATISTICS BY MOVEMENT SIZE")
     print("="*80)
     
-    movement_by_size = {}
+    movement_by_size: dict[float, list[MovementResult]] = {}
     for result in movement_results:
         size = round(result.expected_distance_um, 0)  # Round to nearest µm
         if size not in movement_by_size:
