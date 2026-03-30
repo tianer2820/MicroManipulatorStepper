@@ -49,7 +49,7 @@ if ENABLE_MOVE:
 if ENABLE_FREE_MOVE or __name__ == "__main__":
     user_input = input("press to home or s to skip: ")
     if user_input.lower() != 's':
-        oms.home()
+        oms.home(axis_list=[2])
 
     oms.wait_for_stop()
 

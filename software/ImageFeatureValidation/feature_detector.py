@@ -786,10 +786,10 @@ def parse_position(folder_name: str) -> tuple:
     try:
         idx = int(parts[0])
         # Convert notation like '0+1' to '0.1'
-        startx = float(parts[1].replace('+', '.'))
-        starty = float(parts[2].replace('+', '.'))
-        endx = float(parts[3].replace('+', '.'))
-        endy = float(parts[4].replace('+', '.'))
+        startx = float(parts[1].replace('d', '.'))
+        starty = float(parts[2].replace('d', '.'))
+        endx = float(parts[3].replace('d', '.'))
+        endy = float(parts[4].replace('d', '.'))
         return (idx, startx, starty, endx, endy)
     except (ValueError, IndexError) as e:
         raise ValueError(f"Could not parse folder name {folder_name}: {e}")
@@ -801,13 +801,13 @@ def calculate_xy_distance(pos1: tuple, pos2: tuple) -> float:
     Positions are (idx, startx, starty, endx, endy) tuples in mm, returns distance in µm.
     Uses the end coordinates of pos1 compared to start coordinates of pos2.
     """
-    x1 = pos1[3]  # endx
-    y1 = pos1[4]  # endy
-    x2 = pos2[1]  # startx
-    y2 = pos2[2]  # starty
+    x1 = pos2[1]  # endx
+    y1 = pos2[2]  # endy
+    x2 = pos1[1]  # startx
+    y2 = pos1[2]  # starty
     
-    dx = (x2 - x1) * 1000  # Convert mm to µm
-    dy = (y2 - y1) * 1000
+    dx = (x2 - x1) *1000
+    dy = (y2 - y1) *1000
     return np.sqrt(dx**2 + dy**2)
 
 
