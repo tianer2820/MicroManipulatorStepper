@@ -66,6 +66,27 @@ class AverageTransformResult:
     total_movement_um: float
 
 
+@dataclass
+class MovementResult:
+    """Result from comparing two folder positions."""
+    from_position: str
+    to_position: str
+    expected_distance_um: float
+    actual_distance_um: float
+    difference_um: float
+
+
+@dataclass
+class MovementStatistics:
+    """Statistics for movements of the same size."""
+    expected_distance_um: float
+    count: int
+    mean_actual_distance_um: float
+    std_actual_distance_um: float
+    mean_difference_um: float
+    std_difference_um: float
+
+
 def build_camera_intrinsics(img_shape: tuple, fov_deg: float) -> np.ndarray:
     """
     Build a simple pinhole camera intrinsic matrix from image size and diagonal FOV.
@@ -751,6 +772,271 @@ def compare_locations(
             visualize_matches(img1, img2, kp1, kp2, matches)
         except Exception as e:
             print(f"Could not visualize matches: {e}")
+
+
+def parse_position(folder_name: str) -> tuple:
+    """
+    Parse folder name of format 'idx_startx_starty_endx_endy' into coordinates.
+    Returns (idx, startx, starty, endx, endy) as floats, handling decimal notation like '0+1' -> 0.1
+    """
+    parts = folder_name.split('_')
+    if len(parts) != 5:
+        raise ValueError(f"Invalid folder format: {folder_name}. Expected 'idx_startx_starty_endx_endy'")
+    
+    try:
+        idx = int(parts[0])
+        # Convert notation like '0+1' to '0.1'
+        startx = float(parts[1].replace('+', '.'))
+        starty = float(parts[2].replace('+', '.'))
+        endx = float(parts[3].replace('+', '.'))
+        endy = float(parts[4].replace('+', '.'))
+        return (idx, startx, starty, endx, endy)
+    except (ValueError, IndexError) as e:
+        raise ValueError(f"Could not parse folder name {folder_name}: {e}")
+
+
+def calculate_xy_distance(pos1: tuple, pos2: tuple) -> float:
+    """
+    Calculate 2D distance between two positions in micrometers.
+    Positions are (idx, startx, starty, endx, endy) tuples in mm, returns distance in µm.
+    Uses the end coordinates of pos1 compared to start coordinates of pos2.
+    """
+    x1 = pos1[3]  # endx
+    y1 = pos1[4]  # endy
+    x2 = pos2[1]  # startx
+    y2 = pos2[2]  # starty
+    
+    dx = (x2 - x1) * 1000  # Convert mm to µm
+    dy = (y2 - y1) * 1000
+    return np.sqrt(dx**2 + dy**2)
+
+
+@APP.command()
+def analyze_movements(
+    root_dir: Path,
+    excel_output: Path = None,
+    pixel_to_um: float = DEFAULT_PIXEL_UM,
+    camera_height_um: float = DEFAULT_CAMERA_HEIGHT_UM,
+    fov_deg: float = DEFAULT_FOV_DEG,
+    match_limit: float = DEFAULT_MATCH_LIMIT,
+):
+    """
+    Analyze movement accuracy by comparing sequential folder positions.
+    
+    Folder structure: each subfolder named as 'idx_startx_starty_endx_endy' where coordinates are in mm.
+    Notation like '0+1' represents '0.1' (decimal sanitization).
+    Compares all images between consecutive folders and uses the average distance.
+    
+    Args:
+        root_dir: Root directory containing position folders
+        excel_output: Optional path to Excel file for saving results
+        pixel_to_um: Pixel to micrometer conversion factor
+        camera_height_um: Camera height in µm
+        fov_deg: Field of view in degrees
+        match_limit: SIFT feature match threshold
+    """
+    root_dir = Path(root_dir)
+    
+    # Find all position folders
+    position_folders = sorted([
+        d for d in root_dir.iterdir() 
+        if d.is_dir() and '_' in d.name
+    ], key=lambda p: parse_position(p.name)[0])
+    
+    if len(position_folders) < 2:
+        raise ValueError(f"Need at least 2 position folders, found {len(position_folders)}")
+    
+    print(f"\nFound {len(position_folders)} position folders")
+    
+    # Parse all positions
+    positions = {}
+    for folder in position_folders:
+        try:
+            pos = parse_position(folder.name)
+            positions[folder] = pos
+            print(f"  {folder.name} → idx={pos[0]}, ({pos[1]:.1f},{pos[2]:.1f}) to ({pos[3]:.1f},{pos[4]:.1f})mm")
+        except ValueError as e:
+            print(f"  Skipping {folder.name}: {e}")
+            continue
+    
+    # Compare sequential positions
+    movement_results = []
+    print("\n" + "="*80)
+    print("COMPARING SEQUENTIAL POSITIONS")
+    print("="*80)
+    
+    sorted_folders = sorted(positions.keys(), key=lambda f: positions[f][0])
+    
+    for i in range(len(sorted_folders) - 1):
+        folder1 = sorted_folders[i]
+        folder2 = sorted_folders[i + 1]
+        pos1 = positions[folder1]
+        pos2 = positions[folder2]
+        
+        # Calculate expected distance (XY only, in µm)
+        expected_distance = calculate_xy_distance(pos1, pos2)
+        
+        # Get all images from each folder for comparison
+        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+        images1 = sorted([p for p in folder1.glob('*') if p.suffix.lower() in image_extensions])
+        images2 = sorted([p for p in folder2.glob('*') if p.suffix.lower() in image_extensions])
+        
+        if not images1 or not images2:
+            print(f"  [{folder1.name} → {folder2.name}] Skipped: missing images")
+            continue
+        
+        try:
+            # Compare all images from folder1 to all images from folder2
+            actual_distances = []
+            failed_comparisons = 0
+            
+            for img1_path in images1:
+                for img2_path in images2:
+                    try:
+                        img1, img2, kp1, kp2, matches, T, K1, K2 = compare_images(
+                            img1_path, img2_path, match_limit, camera_height_um, fov_deg, pixel_to_um
+                        )
+                        (tx, ty, tz), yaw = decompose_transform(T, pixel_to_um)
+                        # Calculate actual distance (XY only)
+                        distance = np.sqrt(tx**2 + ty**2)
+                        actual_distances.append(distance)
+                    except Exception as e:
+                        failed_comparisons += 1
+                        continue
+            
+            if not actual_distances:
+                print(f"  [{folder1.name} → {folder2.name}] Failed: no successful image comparisons")
+                continue
+            
+            # Use average of all comparisons
+            actual_distance = np.mean(actual_distances)
+            difference = actual_distance - expected_distance
+            difference = actual_distance - expected_distance
+            
+            result = MovementResult(
+                from_position=folder1.name,
+                to_position=folder2.name,
+                expected_distance_um=expected_distance,
+                actual_distance_um=actual_distance,
+                difference_um=difference,
+            )
+            movement_results.append(result)
+            
+            print(f"  [{folder1.name} → {folder2.name}]")
+            print(f"    Expected: {expected_distance:7.1f} µm")
+            print(f"    Actual:   {actual_distance:7.1f} µm")
+            print(f"    Diff:     {difference:+7.1f} µm ({difference/expected_distance*100:+.1f}%)")
+            
+        except Exception as e:
+            print(f"  [{folder1.name} → {folder2.name}] Failed: {e}")
+            continue
+    
+    if not movement_results:
+        print("No valid movement comparisons found!")
+        return
+    
+    # Calculate statistics by movement size
+    print("\n" + "="*80)
+    print("STATISTICS BY MOVEMENT SIZE")
+    print("="*80)
+    
+    movement_by_size = {}
+    for result in movement_results:
+        size = round(result.expected_distance_um, 0)  # Round to nearest µm
+        if size not in movement_by_size:
+            movement_by_size[size] = []
+        movement_by_size[size].append(result)
+    
+    statistics = []
+    for size in sorted(movement_by_size.keys()):
+        results = movement_by_size[size]
+        actual_distances = [r.actual_distance_um for r in results]
+        differences = [r.difference_um for r in results]
+        
+        stats = MovementStatistics(
+            expected_distance_um=size,
+            count=len(results),
+            mean_actual_distance_um=np.mean(actual_distances),
+            std_actual_distance_um=np.std(actual_distances),
+            mean_difference_um=np.mean(differences),
+            std_difference_um=np.std(differences),
+        )
+        statistics.append(stats)
+        
+        print(f"\n{size:6.0f} µm moves (n={len(results)}):")
+        print(f"  Actual:     {np.mean(actual_distances):7.1f} ± {np.std(actual_distances):6.1f} µm")
+        print(f"  Difference: {np.mean(differences):+7.1f} ± {np.std(differences):6.1f} µm")
+    
+    # Write Excel output if requested
+    if excel_output:
+        print(f"\nWriting results to Excel...")
+        write_movement_results_to_excel(excel_output, movement_results, statistics)
+
+
+def write_movement_results_to_excel(filepath: Path, movement_results: list, statistics: list):
+    """
+    Write movement analysis results to Excel with two sheets.
+    
+    Sheet 1: Individual movements
+    Sheet 2: Statistics by movement size
+    """
+    filepath = Path(filepath)
+    
+    # Load existing workbook or create new one
+    if filepath.exists():
+        wb = load_workbook(filepath)
+    else:
+        wb = Workbook()
+        wb.remove(wb.active)
+    
+    # Sheet 1: Individual Movements
+    sheet_name = "Movements"
+    if sheet_name in wb.sheetnames:
+        ws_moves = wb[sheet_name]
+        # Clear existing data
+        for row in ws_moves.iter_rows(min_row=2, max_row=ws_moves.max_row):
+            for cell in row:
+                cell.value = None
+    else:
+        ws_moves = wb.create_sheet(sheet_name)
+        headers = ['From Position', 'To Position', 'Expected (µm)', 'Actual (µm)', 'Difference (µm)']
+        ws_moves.append(headers)
+    
+    for result in movement_results:
+        ws_moves.append([
+            result.from_position,
+            result.to_position,
+            result.expected_distance_um,
+            result.actual_distance_um,
+            result.difference_um,
+        ])
+    
+    # Sheet 2: Statistics by Movement Size
+    sheet_name = "Movement Statistics"
+    if sheet_name in wb.sheetnames:
+        ws_stats = wb[sheet_name]
+        # Clear existing data
+        for row in ws_stats.iter_rows(min_row=2, max_row=ws_stats.max_row):
+            for cell in row:
+                cell.value = None
+    else:
+        ws_stats = wb.create_sheet(sheet_name)
+        headers = ['Expected (µm)', 'Count', 'Mean Actual (µm)', 'Std Actual (µm)', 
+                   'Mean Difference (µm)', 'Std Difference (µm)']
+        ws_stats.append(headers)
+    
+    for stat in statistics:
+        ws_stats.append([
+            stat.expected_distance_um,
+            stat.count,
+            stat.mean_actual_distance_um,
+            stat.std_actual_distance_um,
+            stat.mean_difference_um,
+            stat.std_difference_um,
+        ])
+    
+    wb.save(filepath)
+    print(f"  Results written to: {filepath}")
 
 
 if __name__ == "__main__":
