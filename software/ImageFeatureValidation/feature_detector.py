@@ -1,3 +1,4 @@
+import csv
 import cv2
 import numpy as np
 from openpyxl import Workbook, load_workbook
@@ -75,17 +76,32 @@ class MovementResult:
     expected_distance_um: float
     actual_distance_um: float
     difference_um: float
+    feed: float = 0.0  # Feed rate used for this movement
 
 
 @dataclass
 class MovementStatistics:
-    """Statistics for movements of the same size."""
+    """Statistics for movements of the same size and feed."""
     expected_distance_um: float
+    feed: float
     count: int
     mean_actual_distance_um: float
     std_actual_distance_um: float
     mean_difference_um: float
     std_difference_um: float
+
+
+@dataclass
+class ImageVariationResult:
+    """Result from comparing images at the same endpoint location."""
+    endpoint: str  # Rounded endpoint coordinates
+    num_visits: int  # Number of times this endpoint was visited
+    num_image_pairs: int  # Total number of image pairs compared
+    mean_tx_um: float  # Mean translation in X
+    std_tx_um: float  # Std of translation in X
+    mean_ty_um: float  # Mean translation in Y
+    std_ty_um: float  # Std of translation in Y
+    mean_total_xy_movement_um: float  # Mean total XY movement (ignoring Z and rotation)
 
 
 def build_camera_intrinsics(img_shape: tuple, fov_deg: float) -> np.ndarray:
@@ -783,6 +799,27 @@ class FolderInfo:
     endx: float
     endy: float
 
+
+ENDPOINT_ROUNDING_MM = 0.00001  # 10 nanometers in mm
+
+
+def round_endpoint(x: float, y: float, tolerance_mm: float = ENDPOINT_ROUNDING_MM) -> tuple[float, float]:
+    """
+    Round endpoint coordinates to the nearest tolerance value.
+    This helps group visits to essentially the same location.
+    
+    Args:
+        x, y: Coordinates in mm
+        tolerance_mm: Rounding tolerance (default: 10 nm = 0.00001 mm)
+    
+    Returns:
+        Tuple of rounded (x, y) coordinates
+    """
+    rounded_x = round(x / tolerance_mm) * tolerance_mm
+    rounded_y = round(y / tolerance_mm) * tolerance_mm
+    return rounded_x, rounded_y
+
+
 def parse_position(folder_name: str) -> FolderInfo:
     """
     Parse folder name of format 'idx_expected_startx_starty_endx_endy' into coordinates.
@@ -831,14 +868,15 @@ def analyze_movements(
     match_limit: float = DEFAULT_MATCH_LIMIT,
 ):
     """
-    Analyze movement accuracy by comparing sequential folder positions.
+    Analyze movement accuracy by reading indexed image folders and CSV metadata.
     
-    Folder structure: each subfolder named as 'idx_startx_starty_endx_endy' where coordinates are in mm.
-    Notation like '0+1' represents '0.1' (decimal sanitization).
-    Compares all images between consecutive folders and uses the average distance.
+    Folder structure: indexed folders (0, 1, 2, ...) containing images.
+    Reads from:
+    - idx_to_coord.csv: Maps index to (x, y) coordinates
+    - path_order.csv: Defines movements (start_idx, end_idx, expected_distance_um)
     
     Args:
-        root_dir: Root directory containing position folders
+        root_dir: Root directory containing indexed folders and CSV files
         excel_output: Optional path to Excel file for saving results
         pixel_to_um: Pixel to micrometer conversion factor
         camera_height_um: Camera height in µm
@@ -847,27 +885,47 @@ def analyze_movements(
     """
     root_dir = Path(root_dir)
     
-    # Find all position folders
-    position_folders = sorted([
-        d for d in root_dir.iterdir() 
-        if d.is_dir() and '_' in d.name
-    ], key=lambda p: parse_position(p.name).idx)
+    # Read the CSV files
+    idx_to_coord_file = root_dir / "idx_to_coord.csv"
+    path_order_file = root_dir / "path_order.csv"
     
-    if len(position_folders) < 2:
-        raise ValueError(f"Need at least 2 position folders, found {len(position_folders)}")
+    if not idx_to_coord_file.exists():
+        raise ValueError(f"File not found: {idx_to_coord_file}")
+    if not path_order_file.exists():
+        raise ValueError(f"File not found: {path_order_file}")
     
-    print(f"\nFound {len(position_folders)} position folders")
+    # Load idx_to_coord mapping
+    idx_to_coord = {}
+    with open(idx_to_coord_file, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            idx = int(row['idx'])
+            x = float(row['x'])
+            y = float(row['y'])
+            idx_to_coord[idx] = (x, y)
     
-    # Parse all positions
-    positions: dict[Path, FolderInfo] = {}
-    for folder in position_folders:
-        try:
-            pos = parse_position(folder.name)
-            positions[folder] = pos
-            print(f"  {folder.name} → idx={pos.idx}, ({pos.startx:.5f},{pos.starty:.5f}) to ({pos.endx:.5f},{pos.endy:.5f})mm for a movement of {pos.expected:.5f}mm")
-        except ValueError as e:
-            print(f"  Skipping {folder.name}: {e}")
-            continue
+    print(f"\nLoaded {len(idx_to_coord)} location coordinates")
+    for idx in sorted(idx_to_coord.keys()):
+        x, y = idx_to_coord[idx]
+        print(f"  Location {idx}: ({x:.6f}, {y:.6f}) mm")
+    
+    # Load path_order movements
+    movements = []
+    with open(path_order_file, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            start_idx = int(row['start_idx'])
+            end_idx = int(row['end_idx'])
+            expected_distance_mm = float(row['expected_distance']) if 'expected_distance' in row else None
+            feed = float(row['feed']) if 'feed' in row else None
+            movements.append((start_idx, end_idx, expected_distance_mm, feed))
+    
+    print(f"\nLoaded {len(movements)} movements")
+    for start_idx, end_idx, expected_dist, feed in movements:
+        if expected_dist is not None:
+            print(f"  {start_idx} → {end_idx}: expected {expected_dist:.6f} mm ({expected_dist*1000:.1f} µm), feed={feed}")
+        else:
+            print(f"  {start_idx} → {end_idx}: no expected distance, feed={feed}")
     
     # Compare sequential positions
     movement_results: list[MovementResult] = []
@@ -875,24 +933,25 @@ def analyze_movements(
     print("COMPARING SEQUENTIAL POSITIONS")
     print("="*80)
     
-    sorted_folders: list[Path] = sorted(positions.keys(), key=lambda f: positions[f][0])
+    image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
     
-    for i in range(len(sorted_folders) - 1):
-        folder1 = sorted_folders[i]
-        folder2 = sorted_folders[i + 1]
-        pos1 = positions[folder1]
-        pos2 = positions[folder2]
+    for start_idx, end_idx, expected_distance_mm, feed in movements:
+        # Convert expected distance from mm to µm
+        expected_distance_um = expected_distance_mm * 1000 if expected_distance_mm is not None else None
         
-        # Calculate expected distance (XY only, in µm)
-        expected_distance = pos2.expected
+        folder1 = root_dir / str(start_idx)
+        folder2 = root_dir / str(end_idx)
         
-        # Get all images from each folder for comparison
-        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+        if not folder1.exists() or not folder2.exists():
+            print(f"  [{start_idx} → {end_idx}] Skipped: folder(s) not found")
+            continue
+        
+        # Get all images from each folder
         images1 = sorted([p for p in folder1.glob('*') if p.suffix.lower() in image_extensions])
         images2 = sorted([p for p in folder2.glob('*') if p.suffix.lower() in image_extensions])
         
         if not images1 or not images2:
-            print(f"  [{folder1.name} → {folder2.name}] Skipped: missing images")
+            print(f"  [{start_idx} → {end_idx}] Skipped: missing images")
             continue
         
         try:
@@ -915,30 +974,39 @@ def analyze_movements(
                         continue
             
             if not actual_distances:
-                print(f"  [{folder1.name} → {folder2.name}] Failed: no successful image comparisons")
+                print(f"  [{start_idx} → {end_idx}] Failed: no successful image comparisons")
                 continue
             
             # Use average of all comparisons
             actual_distance = np.mean(actual_distances)
-            difference = actual_distance - expected_distance
-            difference = actual_distance - expected_distance
             
+            # Get coordinates
+            x1, y1 = idx_to_coord[start_idx]
+            x2, y2 = idx_to_coord[end_idx]
+            
+            # Calculate difference if expected distance is available
+            if expected_distance_um is None:
+                expected_distance_um = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            difference = actual_distance - expected_distance_um
+
             result = MovementResult(
-                from_position=f"({pos2.startx:.9f},{pos2.starty:.9f})",
-                to_position=f"({pos2.endx:.9f},{pos2.endy:.9f})",
-                expected_distance_um=expected_distance,
+                from_position=f"({x1:.9f},{y1:.9f})",
+                to_position=f"({x2:.9f},{y2:.9f})",
+                expected_distance_um=expected_distance_um,
                 actual_distance_um=actual_distance,
                 difference_um=difference,
+                feed=feed if feed is not None else 0.0,
             )
             movement_results.append(result)
             
-            print(f"  [{folder1.name} → {folder2.name}]")
-            print(f"    Expected: {expected_distance:7.1f} µm")
+            print(f"  [{start_idx} → {end_idx}]")
+            print(f"    Expected: {expected_distance_um:7.1f} µm")
             print(f"    Actual:   {actual_distance:7.1f} µm")
-            print(f"    Diff:     {difference:+7.1f} µm ({difference/expected_distance*100:+.1f}%)")
+            if expected_distance_um > 0:
+                print(f"    Diff:     {difference:+7.1f} µm ({difference/expected_distance_um*100:+.1f}%)")
             
         except Exception as e:
-            print(f"  [{folder1.name} → {folder2.name}] Failed: {e}")
+            print(f"  [{start_idx} → {end_idx}] Failed: {e}")
             continue
     
     if not movement_results:
@@ -950,21 +1018,25 @@ def analyze_movements(
     print("STATISTICS BY MOVEMENT SIZE")
     print("="*80)
     
-    movement_by_size: dict[float, list[MovementResult]] = {}
+    # Group by (distance, feed) combination
+    movement_by_size_and_feed: dict[tuple, list[MovementResult]] = {}
     for result in movement_results:
         size = round(result.expected_distance_um, 0)  # Round to nearest µm
-        if size not in movement_by_size:
-            movement_by_size[size] = []
-        movement_by_size[size].append(result)
+        feed_key = round(result.feed, 1)  # Round feed to nearest 0.1
+        key = (size, feed_key)
+        if key not in movement_by_size_and_feed:
+            movement_by_size_and_feed[key] = []
+        movement_by_size_and_feed[key].append(result)
     
     statistics = []
-    for size in sorted(movement_by_size.keys()):
-        results = movement_by_size[size]
+    for (size, feed_key) in sorted(movement_by_size_and_feed.keys()):
+        results = movement_by_size_and_feed[(size, feed_key)]
         actual_distances = [r.actual_distance_um for r in results]
         differences = [r.difference_um for r in results]
         
         stats = MovementStatistics(
             expected_distance_um=size,
+            feed=feed_key,
             count=len(results),
             mean_actual_distance_um=np.mean(actual_distances),
             std_actual_distance_um=np.std(actual_distances),
@@ -973,22 +1045,111 @@ def analyze_movements(
         )
         statistics.append(stats)
         
-        print(f"\n{size:6.0f} µm moves (n={len(results)}):")
+        print(f"\n{size:6.0f} µm moves at feed {feed_key:7.1f} (n={len(results)}):")
         print(f"  Actual:     {np.mean(actual_distances):7.1f} ± {np.std(actual_distances):6.1f} µm")
         print(f"  Difference: {np.mean(differences):+7.1f} ± {np.std(differences):6.1f} µm")
+    
+    # Analyze image variations at same endpoints
+    print("\n" + "="*80)
+    print("ANALYZING IMAGE VARIATIONS AT SAME ENDPOINTS")
+    print("="*80)
+    
+    image_variations: list[ImageVariationResult] = []
+    endpoints_to_indices: dict[tuple, list[int]] = {}
+    
+    # Group indices by their rounded endpoint
+    for idx, (x, y) in idx_to_coord.items():
+        rounded_ep = round_endpoint(x, y)
+        if rounded_ep not in endpoints_to_indices:
+            endpoints_to_indices[rounded_ep] = []
+        endpoints_to_indices[rounded_ep].append(idx)
+    
+    # Analyze variations for endpoints with multiple visits
+    for endpoint, idx_list in sorted(endpoints_to_indices.items()):
+        if len(idx_list) < 2:
+            continue  # Skip endpoints with only one visit
+        
+        rounded_x, rounded_y = endpoint
+        endpoint_str = f"({rounded_x:.9f},{rounded_y:.9f})"
+        
+        print(f"\n  Endpoint {endpoint_str}: {len(idx_list)} visits (indices: {idx_list})")
+        
+        # Collect all images from all visits to this endpoint
+        all_images_by_idx: dict[int, list[Path]] = {}
+        
+        for idx in idx_list:
+            folder = root_dir / str(idx)
+            if folder.exists():
+                images = sorted([p for p in folder.glob('*') if p.suffix.lower() in image_extensions])
+                if images:
+                    all_images_by_idx[idx] = images
+        
+        # Compare images across different visits
+        all_comparisons = []
+        idx_list_with_images = list(all_images_by_idx.keys())
+        
+        for i in range(len(idx_list_with_images)):
+            for j in range(i + 1, len(idx_list_with_images)):
+                idx_i = idx_list_with_images[i]
+                idx_j = idx_list_with_images[j]
+                
+                images_i = all_images_by_idx[idx_i]
+                images_j = all_images_by_idx[idx_j]
+                
+                # Compare all image pairs between these two visits
+                for img_i in images_i:
+                    for img_j in images_j:
+                        try:
+                            img1, img2, kp1, kp2, matches, T, K1, K2 = compare_images(
+                                img_i, img_j, match_limit, camera_height_um, fov_deg, pixel_to_um
+                            )
+                            (tx, ty, tz), yaw = decompose_transform(T, pixel_to_um)
+                            xy_movement = np.sqrt(tx**2 + ty**2)  # Only XY movement
+                            
+                            all_comparisons.append({
+                                'tx': tx,
+                                'ty': ty,
+                                'xy_movement': xy_movement,
+                            })
+                        except Exception as e:
+                            continue
+        
+        if all_comparisons:
+            # Calculate statistics (XY only, ignoring Z and rotation)
+            tx_values = [c['tx'] for c in all_comparisons]
+            ty_values = [c['ty'] for c in all_comparisons]
+            xy_movement_values = [c['xy_movement'] for c in all_comparisons]
+            
+            result = ImageVariationResult(
+                endpoint=endpoint_str,
+                num_visits=len(idx_list),
+                num_image_pairs=len(all_comparisons),
+                mean_tx_um=float(np.mean(tx_values)),
+                std_tx_um=float(np.std(tx_values)),
+                mean_ty_um=float(np.mean(ty_values)),
+                std_ty_um=float(np.std(ty_values)),
+                mean_total_xy_movement_um=float(np.mean(xy_movement_values)),
+            )
+            image_variations.append(result)
+            
+            print(f"    Compared {len(all_comparisons)} image pairs")
+            print(f"    TX variation: {np.mean(tx_values):+7.2f} ± {np.std(tx_values):6.2f} µm")
+            print(f"    TY variation: {np.mean(ty_values):+7.2f} ± {np.std(ty_values):6.2f} µm")
+            print(f"    XY movement: {np.mean(xy_movement_values):7.2f} ± {np.std(xy_movement_values):6.2f} µm")
     
     # Write Excel output if requested
     if excel_output:
         print(f"\nWriting results to Excel...")
-        write_movement_results_to_excel(excel_output, movement_results, statistics)
+        write_movement_results_to_excel(excel_output, movement_results, statistics, image_variations)
 
 
-def write_movement_results_to_excel(filepath: Path, movement_results: list, statistics: list):
+def write_movement_results_to_excel(filepath: Path, movement_results: list, statistics: list, image_variations: list = None):
     """
-    Write movement analysis results to Excel with two sheets.
+    Write movement analysis results to Excel with three sheets.
     
     Sheet 1: Individual movements
     Sheet 2: Statistics by movement size
+    Sheet 3: Image variations at same endpoints (if available)
     """
     filepath = Path(filepath)
     
@@ -1009,7 +1170,7 @@ def write_movement_results_to_excel(filepath: Path, movement_results: list, stat
                 cell.value = None
     else:
         ws_moves = wb.create_sheet(sheet_name)
-        headers = ['From Position', 'To Position', 'Expected (µm)', 'Actual (µm)', 'Difference (µm)']
+        headers = ['From Position', 'To Position', 'Expected (µm)', 'Actual (µm)', 'Difference (µm)', 'Feed']
         ws_moves.append(headers)
     
     for result in movement_results:
@@ -1019,9 +1180,10 @@ def write_movement_results_to_excel(filepath: Path, movement_results: list, stat
             result.expected_distance_um,
             result.actual_distance_um,
             result.difference_um,
+            result.feed,
         ])
     
-    # Sheet 2: Statistics by Movement Size
+    # Sheet 2: Statistics by Movement Size and Feed
     sheet_name = "Movement Statistics"
     if sheet_name in wb.sheetnames:
         ws_stats = wb[sheet_name]
@@ -1031,19 +1193,51 @@ def write_movement_results_to_excel(filepath: Path, movement_results: list, stat
                 cell.value = None
     else:
         ws_stats = wb.create_sheet(sheet_name)
-        headers = ['Expected (µm)', 'Count', 'Mean Actual (µm)', 'Std Actual (µm)', 
+        headers = ['Expected (µm)', 'Feed', 'Count', 'Mean Actual (µm)', 'Std Actual (µm)', 
                    'Mean Difference (µm)', 'Std Difference (µm)']
         ws_stats.append(headers)
     
     for stat in statistics:
         ws_stats.append([
             stat.expected_distance_um,
+            stat.feed,
             stat.count,
             stat.mean_actual_distance_um,
             stat.std_actual_distance_um,
             stat.mean_difference_um,
             stat.std_difference_um,
         ])
+    
+    # Sheet 3: Image Variations at Same Endpoints
+    if image_variations:
+        sheet_name = "Image Variations"
+        if sheet_name in wb.sheetnames:
+            ws_variations = wb[sheet_name]
+            # Clear existing data
+            for row in ws_variations.iter_rows(min_row=2, max_row=ws_variations.max_row):
+                for cell in row:
+                    cell.value = None
+        else:
+            ws_variations = wb.create_sheet(sheet_name)
+            headers = [
+                'Endpoint', 'Visits', 'Image Pairs',
+                'Mean TX (µm)', 'Std TX (µm)',
+                'Mean TY (µm)', 'Std TY (µm)',
+                'Mean XY Movement (µm)'
+            ]
+            ws_variations.append(headers)
+        
+        for variation in image_variations:
+            ws_variations.append([
+                variation.endpoint,
+                variation.num_visits,
+                variation.num_image_pairs,
+                variation.mean_tx_um,
+                variation.std_tx_um,
+                variation.mean_ty_um,
+                variation.std_ty_um,
+                variation.mean_total_xy_movement_um,
+            ])
     
     wb.save(filepath)
     print(f"  Results written to: {filepath}")

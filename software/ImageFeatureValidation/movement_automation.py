@@ -78,6 +78,7 @@ class BaslerCamera:
         )
         self.converter = None
         self.last_image = None
+        self.last_image_idx = -1
 
     def open(self):
         """Open and configure the camera."""
@@ -119,10 +120,12 @@ class BaslerCamera:
             self.camera.Close()
             print("Camera closed")
 
-    def get_last_image(self):
-        """Get the last captured image."""
-        return self.last_image
-    
+    def get_next_image(self, image_idx):
+        """Get the next captured image by index."""
+        while self.last_image_idx == image_idx:
+            time.sleep(0.0001)    
+        return self.last_image, self.last_image_idx
+
     def capture_image(self):
         """
         Capture a single image from the camera.
@@ -143,6 +146,7 @@ class BaslerCamera:
                 frame = image.GetArray()
                 grab_result.Release()
                 self.last_image = frame
+                self.last_image_idx+=1
                 return frame
             else:
                 print(f"Error: {grab_result.ErrorCode} - {grab_result.ErrorDescription}")
@@ -230,6 +234,54 @@ def load_relative_points(csv_file):
         print(f"Error: File not found: {csv_file}")
         return []
 
+
+LAST_SCREENSHOT_IMAGE=-1
+
+def take_screenshots(camera: BaslerCamera, delay: float, screenshots: int, folder_path: Path):
+    global LAST_SCREENSHOT_IMAGE
+    current_delay = delay
+    if screenshots > 1:
+        interval = current_delay / (screenshots-1)
+        for shot in range(screenshots-1):
+            # Wait before capturing
+            time.sleep(interval)
+            
+            frame, idx = camera.get_next_image(LAST_SCREENSHOT_IMAGE)
+            LAST_SCREENSHOT_IMAGE=idx
+            if frame is not None:
+                filename = f"{shot:03d}.png"
+                filepath = folder_path / filename
+                
+                img = Image.fromarray(frame, 'RGB')
+                img.save(str(filepath))
+                print(f"  Captured: {folder_path.name}/{filename}")
+            else:
+                print(f"  Error: Failed to capture image {shot}")
+        shot+=1
+        frame, idx = camera.get_next_image(LAST_SCREENSHOT_IMAGE)
+        LAST_SCREENSHOT_IMAGE=idx
+        if frame is not None:
+            filename = f"{shot:03d}.png"
+            filepath = folder_path / filename
+                
+            img = Image.fromarray(frame, 'RGB')
+            img.save(str(filepath))
+            print(f"  Captured: {folder_path.name}/{filename}")
+    else:
+        # Single screenshot - wait for full delay then capture
+        time.sleep(current_delay)
+        
+        frame, idx = camera.get_next_image(LAST_SCREENSHOT_IMAGE)
+        LAST_SCREENSHOT_IMAGE=idx
+        if frame is not None:
+            filename = "000.png"
+            filepath = folder_path / filename
+            
+            img = Image.fromarray(frame, 'RGB')
+            img.save(str(filepath))
+            print(f"  Captured: {folder_path.name}/{filename}")
+        else:
+            print(f"  Error: Failed to capture image")
 
 @app.command()
 def visualize_path(csv_file: str) -> None:
@@ -422,17 +474,30 @@ def main(
         print(f"Screenshots per location: {screenshots}")
         print(f"Delay between moves: {delay}s\n")
 
-        # Track cumulative position for folder naming (idx_startx_starty_endx_endy format)
+        # Track cumulative position and capture locations
         prev_x, prev_y = x_start, y_start
+        location_idx = 0
+        idx_to_coord = []  # List of (idx, x, y) tuples
+        path_order = []    # List of (start_idx, end_idx) tuples
+        
+        # Record starting location as index 0 and take pics
+        folder_name = str(location_idx)
+        folder_path = output_dir / folder_name
+        folder_path.mkdir(parents=True, exist_ok=True)
+        
+        # Capture multiple images distributed over the delay period
+        take_screenshots(camera, delay, screenshots, folder_path)
+        idx_to_coord.append((location_idx, x_start, y_start))
+        location_idx += 1
         
         # Move through each relative point and capture images
-        for idx, (rel_x, rel_y,  abs_x, abs_y, feed, line_delay) in enumerate(relative_points):
+        for point_idx, (rel_x, rel_y,  abs_x_data, abs_y_data, feed, line_delay) in enumerate(relative_points):
             # Use per-line delay if provided, otherwise use default
             current_delay = line_delay if line_delay is not None else delay
             
             # Calculate absolute position (XY only, keep Z constant). If 0,0 go back to the original
             # starting position
-            if(abs_x, abs_y) == (0, 0):
+            if(abs_x_data, abs_y_data) == (0, 0):
                 abs_x = x_start
                 abs_y = y_start
             else:
@@ -441,7 +506,7 @@ def main(
             abs_z = z_current  # Keep Z constant
             expected_distance = np.sqrt((rel_x ** 2) + (rel_y ** 2))
 
-            print(f"[{idx + 1}/{len(relative_points)}] Moving to relative ({rel_x}, {rel_y}) with feed {feed}")
+            print(f"[{point_idx + 1}/{len(relative_points)}] Moving to relative ({rel_x}, {rel_y}) with feed {feed}")
             print(f"  Absolute position: ({abs_x:.6f}, {abs_y:.6f}, {abs_z:.6f})")
 
             # Move stage
@@ -452,62 +517,42 @@ def main(
             final_x, final_y, final_z = oms.read_current_position()
             print(f"  Final position: ({final_x:.6f}, {final_y:.6f}, {final_z:.6f})")
 
-            # Create folder with format: idx_startx_starty_endx_endy
-            # Convert coordinates to filename-safe format (replace . with d)
-            expected_distance_str = f"{expected_distance:.9f}".replace('.', 'd')
-            start_x_str = f"{prev_x:+.9f}".replace('.', 'd')
-            start_y_str = f"{prev_y:+.9f}".replace('.', 'd')
-            end_x_str = f"{final_x:+.9f}".replace('.', 'd')
-            end_y_str = f"{final_y:+.9f}".replace('.', 'd')
+            # Record this location
+            idx_to_coord.append((location_idx, final_x-x_start, final_y-y_start))
+            # Record the movement from previous location to this one
+            path_order.append((location_idx - 1, location_idx, expected_distance, feed))
             
-            folder_name = f"{idx}_{expected_distance_str}_{start_x_str}_{start_y_str}_{end_x_str}_{end_y_str}"
+            # Create folder with simple index name
+            folder_name = str(location_idx)
             folder_path = output_dir / folder_name
             folder_path.mkdir(parents=True, exist_ok=True)
             
             # Capture multiple images distributed over the delay period
-            if screenshots > 1:
-                interval = current_delay / (screenshots-1)
-                for shot in range(screenshots-1):
-                    # Wait before capturing
-                    time.sleep(interval)
-                    
-                    frame = camera.get_last_image()
-                    if frame is not None:
-                        filename = f"{shot:03d}.png"
-                        filepath = folder_path / filename
-                        
-                        img = Image.fromarray(frame, 'RGB')
-                        img.save(str(filepath))
-                        print(f"  Captured: {folder_name}/{filename}")
-                    else:
-                        print(f"  Error: Failed to capture image {shot}")
-                frame = camera.get_last_image()
-                if frame is not None:
-                    filename = f"{shot:03d}.png"
-                    filepath = folder_path / filename
-                        
-                    img = Image.fromarray(frame, 'RGB')
-                    img.save(str(filepath))
-                    print(f"  Captured: {folder_name}/{filename}")
-            else:
-                # Single screenshot - wait for full delay then capture
-                time.sleep(current_delay)
-                
-                frame = camera.get_last_image()
-                if frame is not None:
-                    filename = "000.png"
-                    filepath = folder_path / filename
-                    
-                    img = Image.fromarray(frame, 'RGB')
-                    img.save(str(filepath))
-                    print(f"  Captured: {folder_name}/{filename}")
-                else:
-                    print(f"  Error: Failed to capture image")
+            take_screenshots(camera, current_delay, screenshots, folder_path)
             
             # Update previous position for next iteration (XY only and keep z incase it moved)
             prev_x, prev_y, z_current = oms.read_current_position()
+            location_idx += 1
 
         print("\nCapture complete!")
+        
+        # Save idx_to_coord.csv
+        idx_to_coord_path = output_dir / "idx_to_coord.csv"
+        with open(idx_to_coord_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['idx', 'x', 'y'])  # Header
+            for idx, x, y in idx_to_coord:
+                writer.writerow([idx, x, y])
+        print(f"Saved coordinate mapping to: {idx_to_coord_path}")
+        
+        # Save path_order.csv
+        path_order_path = output_dir / "path_order.csv"
+        with open(path_order_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['start_idx', 'end_idx', 'expected_distance', 'feed'])  # Header
+            for start_idx, end_idx, distance, feed_val in path_order:
+                writer.writerow([start_idx, end_idx, distance, feed_val])
+        print(f"Saved path order to: {path_order_path}")
 
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
