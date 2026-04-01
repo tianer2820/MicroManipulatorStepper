@@ -19,6 +19,7 @@ PROGRESS_CSV = Path("progress.csv")
 DEFAULT_PIXEL_UM = 0.6209
 DEFAULT_CAMERA_HEIGHT_UM = 1500.0   # height of camera above the plane (in µm)
 DEFAULT_FOV_DEG = 60.0              # diagonal field of view in degrees
+MAX_POINT_COMPARISONS = 1000
 
 
 # ------------------------------------------------------------------ #
@@ -805,22 +806,11 @@ class FolderInfo:
 ENDPOINT_ROUNDING_MM = 0.00001  # 10 nanometers in mm
 
 
-def round_endpoint(x: float, y: float, tolerance_mm: float = ENDPOINT_ROUNDING_MM) -> tuple[float, float]:
-    """
-    Round endpoint coordinates to the nearest tolerance value.
-    This helps group visits to essentially the same location.
-    
-    Args:
-        x, y: Coordinates in mm
-        tolerance_mm: Rounding tolerance (default: 10 nm = 0.00001 mm)
-    
-    Returns:
-        Tuple of rounded (x, y) coordinates
-    """
-    rounded_x = round(x / tolerance_mm) * tolerance_mm
-    rounded_y = round(y / tolerance_mm) * tolerance_mm
-    return rounded_x, rounded_y
 
+def round_endpoint(x: float, y: float, tolerance_mm: float = ENDPOINT_ROUNDING_MM) -> tuple[float, float]:
+    ix = int(round(x / tolerance_mm))
+    iy = int(round(y / tolerance_mm))
+    return (ix, iy)
 
 def parse_position(folder_name: str) -> FolderInfo:
     """
@@ -1309,8 +1299,7 @@ def analyze_movements(
         if rounded_ep not in endpoints_to_indices:
             endpoints_to_indices[rounded_ep] = []
         endpoints_to_indices[rounded_ep].append(idx)
-    
-    # Analyze variations for endpoints with multiple visits
+
     for endpoint, idx_list in sorted(endpoints_to_indices.items()):
         if len(idx_list) < 2:
             continue  # Skip endpoints with only one visit
@@ -1336,7 +1325,8 @@ def analyze_movements(
         for idx in idx_list:
             folder = root_dir / str(idx)
             if folder.exists():
-                images = sorted([p for p in folder.glob('*') if p.suffix.lower() in image_extensions])
+                # only use one image from each folder
+                images = [sorted([p for p in folder.glob('*') if p.suffix.lower() in image_extensions])[0]]
                 if images:
                     all_images_by_idx[idx] = images
         
@@ -1347,7 +1337,7 @@ def analyze_movements(
         # Collect all image pairs to compare
         image_pairs_to_compare = []
         for i in range(len(idx_list_with_images)):
-            for j in range(i + 1, len(idx_list_with_images)):
+            for j in range( len(idx_list_with_images)-1, i + 1, -1):
                 idx_i = idx_list_with_images[i]
                 idx_j = idx_list_with_images[j]
                 
@@ -1358,7 +1348,12 @@ def analyze_movements(
                 for img_i in images_i:
                     for img_j in images_j:
                         image_pairs_to_compare.append((img_i, img_j))
-        
+
+                if len(image_pairs_to_compare) >= MAX_POINT_COMPARISONS:
+                    break
+            if len(image_pairs_to_compare) >= MAX_POINT_COMPARISONS:
+                break
+
         # Compare all image pairs in parallel using thread pool
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = {
@@ -1406,13 +1401,10 @@ def analyze_movements(
             print(f"    TY variation: {np.mean(ty_values):+7.2f} ± {np.std(ty_values):6.2f} µm")
             print(f"    XY movement: {np.mean(xy_movement_values):7.2f} ± {np.std(xy_movement_values):6.2f} µm")
     
+
     # Load any previously saved variation results to include in Excel
     image_variations.extend(existing_variation_results)
-    # Remove duplicates (keep latest version of each endpoint)
-    seen = {}
-    for result in image_variations:
-        seen[result.endpoint] = result
-    image_variations = list(seen.values())
+
     
     # Write Excel output if requested
     if excel_output:

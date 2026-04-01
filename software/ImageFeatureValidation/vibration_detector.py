@@ -101,15 +101,21 @@ class BaslerCamera:
         print(f"Exposure: {self.camera.ExposureTime.GetValue():.1f} us")
 
         # -------------------------
-        # FPS Control - disable and let natural speed run
+        # FPS Control
         # -------------------------
         try:
-            # Disable frame rate limiting
-            self.camera.AcquisitionFrameRateEnable.SetValue(False)
-        except:
-            pass  # Feature may not be available
-        
-        print(f"FPS setting (before grab): {self.camera.AcquisitionFrameRate.GetValue():.1f}")
+            if target_fps is not None:
+                # Enable framerate control and set target
+                self.camera.AcquisitionFrameRateEnable.SetValue(True)
+                self.camera.AcquisitionFrameRate.SetValue(target_fps)
+                actual_fps = self.camera.AcquisitionFrameRate.GetValue()
+                print(f"FPS control enabled: {actual_fps:.1f} FPS target")
+            else:
+                # Disable frame rate limiting for max speed
+                self.camera.AcquisitionFrameRateEnable.SetValue(False)
+                print(f"FPS control disabled (max speed mode)")
+        except Exception as e:
+            print(f"Warning: Could not set framerate control: {e}")
 
         # -------------------------
         # Maximize throughput with larger buffers
@@ -297,6 +303,7 @@ def record_video(
 def analyze_vibrations(
     video_path: Path,
     output_csv: Path = None,
+    fps_override: float | None = 40.0,
     top_n: int = 10,
     roi_x: int = None,
     roi_y: int = None,
@@ -332,7 +339,7 @@ def analyze_vibrations(
         return
     
     # Get video properties
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = cap.get(cv2.CAP_PROP_FPS) if fps_override is None else fps_override
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -380,13 +387,13 @@ def analyze_vibrations(
                 gray = gray[roi[1]:roi[1]+roi[3], roi[0]:roi[0]+roi[2]]
             
             # Calculate optical flow
+            # Note: n8 parameter was removed in OpenCV 4.x
             flow = cv2.calcOpticalFlowFarneback(
-                prev_gray, gray,
+                prev_gray, gray, None,
                 pyr_scale=0.5,
                 levels=3,
                 winsize=15,
                 iterations=3,
-                n8=True,
                 poly_n=5,
                 poly_sigma=1.2,
                 flags=0
@@ -424,7 +431,7 @@ def analyze_vibrations(
         motion_normalized = motion_array
     
     # Apply Hann window to reduce spectral leakage
-    window = signal.hann(len(motion_normalized))
+    window = signal.windows.hann(len(motion_normalized))
     motion_windowed = motion_normalized * window
     
     # Compute FFT
