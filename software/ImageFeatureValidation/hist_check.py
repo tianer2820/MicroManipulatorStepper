@@ -20,6 +20,7 @@ def analyze_csv(path):
     # Track per-segment axis usage
     x_seen = False
     y_seen = False
+    cur_mov_points = defaultdict(list)
 
     with open(path, newline='') as f:
         reader = csv.DictReader(f, delimiter=',')
@@ -41,6 +42,23 @@ def analyze_csv(path):
                 x_seen = False
                 y_seen = False
                 continue
+            
+            if SKIP_FIRST_MOVE and (x_seen and is_y_move):
+                x_seen = False
+                if(cur_mov_points):
+                    for expected, points in cur_mov_points.items():
+                        if(len(points) == 1):
+                            continue
+                        print(f"Segment completed for expected {expected}: {len(points):3} points with len {np.mean(points):11.6f} µm and min {np.min(points):11.6f} µm and max {np.max(points):11.6f} µm and std {np.std(points):11.6f} µm and percentage {np.std(points) / np.mean(points) * 100:11.6f}%")
+                cur_mov_points = defaultdict(list)
+            if SKIP_FIRST_MOVE and (y_seen and is_x_move):
+                y_seen = False
+                if(cur_mov_points):
+                    for expected, points in cur_mov_points.items():
+                        if(len(points) == 1):
+                            continue
+                        print(f"Segment completed for expected {expected}: {len(points):3} points with len {np.mean(points):11.6f} µm and min {np.min(points):11.6f} µm and max {np.max(points):11.6f} µm and std {np.std(points):11.6f} µm and percentage {np.std(points) / np.mean(points) * 100:11.6f}%")
+                cur_mov_points = defaultdict(list)
 
             if SKIP_FIRST_MOVE and is_x_move and not x_seen:
                 x_seen = True
@@ -54,6 +72,7 @@ def analyze_csv(path):
             expected = round(float(row["Expected (um)"]))
             actual = round(float(row["Actual (um)"]))
 
+            cur_mov_points[expected].append(actual)
             if is_x_move and not is_y_move:
                 x_data[expected].append(actual)
             elif is_y_move and not is_x_move:

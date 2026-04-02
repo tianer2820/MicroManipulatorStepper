@@ -222,6 +222,12 @@ class OpenMicroStageInterface:
     }
 
     def __init__(self, show_communication=True, show_log_messages=True):
+        """Initialize the OMM class
+
+        Args:
+            show_communication (bool, optional): If communication should be printed to stdout. Defaults to True.
+            show_log_messages (bool, optional): If log messages should be printed to stdout. Defaults to True.
+        """
         self.serial = None
         self.workspace_transform = np.eye(4)
         self.show_communication = show_communication
@@ -229,6 +235,12 @@ class OpenMicroStageInterface:
         self.disable_message_callbacks = False
 
     def connect(self, port: str, baud_rate: int = 921600):
+        """Connects to the OMM
+
+        Args:
+            port (str): _description_
+            baud_rate (int, optional): _description_. Defaults to 921600.
+        """
         def version_to_str(v):
             return f"v{v[0]}.{v[1]}.{v[2]}"
 
@@ -256,6 +268,8 @@ class OpenMicroStageInterface:
         self.disable_message_callbacks = False
 
     def disconnect(self):
+        """Disconnects from the OMM and stops the reader thread. After calling this, the instance cannot be used anymore
+        """
         if self.serial is not None:
             self.serial.close()
             self.serial = None
@@ -295,7 +309,12 @@ class OpenMicroStageInterface:
     def get_workspace_transform(self):
         return self.workspace_transform
 
-    def read_firmware_version(self):
+    def read_firmware_version(self)->tuple[int, int, int]:
+        """Reads the firmware version from the device
+
+        Returns:
+            tuple[int, int, int]: Returns the Major, Minor, and Patch version as integers. If the command fails, returns (0, 0, 0).
+        """
         ok, response = self.serial.send_command("M58")
         if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
             return 0, 0, 0
@@ -303,11 +322,15 @@ class OpenMicroStageInterface:
         major, minor, patch = map(int, re.match(r"v(\d+)\.(\d+)\.(\d+)", response).groups())
         return major, minor, patch
 
-    def home(self, axis_list=None):
+    def home(self, axis_list: list[int]=None)->SerialInterface.ReplyStatus:
         """
         Homes one or more axes on the device, one axis at a time
-        :param axis_list: Optional list of axis indices to home. If None, all axes are homed.
-        :return: The status of the command (e.g. OK, ERROR, TIMEOUT).
+
+        Args:
+            axis_list (list[int], optional): List of axis indices to home. If None, all axes are homed. Defaults to None.
+        
+        Returns:
+            SerialInterface.ReplyStatus: The status of the command (e.g. OK, ERROR, TIMEOUT).
         """
         axis_chars = ["A", "B", "C", "D", "E", "F"]
         if axis_list is None:
@@ -330,9 +353,6 @@ class OpenMicroStageInterface:
             data[0]: list of motor angles
             data[1]: list of electric field angles
             data[2]: list of raw encoder counts
-        :param joint_index:
-        :param save_result:
-        :return:
         """
         cmd = f"M56 J{joint_index} P"
         if save_result:
@@ -342,17 +362,21 @@ class OpenMicroStageInterface:
         calibration_data = self._parse_table_data(msg, 3)
         return res, calibration_data
 
-    def move_to(self, x, y, z, f, move_immediately=False, blocking=True, timeout=1):
+    def move_to(self, x: float, y: float, z: float, f: float, move_immediately: bool=False, blocking: bool=True, timeout: float=1)->SerialInterface.ReplyStatus:
         """
         Moves the stage to an absolute position with a specified feed rate.
-        :param x: Target X position (in workspace coordinates).
-        :param y: Target Y position (in workspace coordinates).
-        :param z: Target Z position (in workspace coordinates).
-        :param f: Feed rate in mm/s.
-        :param move_immediately: If True, execution starts without buffering delay.
-        :param blocking: If True, waits and retries if the device is busy. If False, returns immediately on 'BUSY'.
-        :param timeout: Timeout in seconds for each command attempt.
-        :return: Status of the move command (e.g. OK, ERROR, BUSY, TIMEOUT).
+
+        Args:
+            x (float): Target X position in workspace coordinates.
+            y (float): Target Y position in workspace coordinates.
+            z (float): Target Z position in workspace coordinates.
+            f (float): Feed rate in mm/s.
+            move_immediately (bool): If True, the move command is executed immediately without waiting for previous moves
+            blocking (bool): If True, the method will wait and retry if the device is busy. If False, it will return immediately on 'BUSY'.
+            timeout (float): Timeout in seconds for each command attempt.
+
+        Returns
+            SerialInterface.ReplyStatus: The status of the command (e.g. OK, ERROR, TIMEOUT, BUSY).
         """
         # Convert to homogeneous vector
         transformed = self.workspace_transform @ np.array([x, y, z, 1.0])
@@ -383,7 +407,15 @@ class OpenMicroStageInterface:
         res, msg = self.serial.send_command(cmd)
         return res
 
-    def wait_for_stop(self, polling_interval_ms=10, disable_callbacks=True):
+    def wait_for_stop(self, disable_callbacks=True)->SerialInterface.ReplyStatus:
+        """Wait for the device to stop movement and complete end
+
+        Args:
+            disable_callbacks (bool, optional): If True, disables message callbacks during the wait. Defaults to True.
+
+        Returns:
+            SerialInterface.ReplyStatus: The status of the command (e.g. OK, ERROR, TIMEOUT).
+        """
         disable_message_callbacks_prev = self.disable_message_callbacks
         if disable_callbacks:
             self.disable_message_callbacks = True
@@ -391,13 +423,20 @@ class OpenMicroStageInterface:
         while True:
             res, msg = self.serial.send_command("M53\n")
             if res != SerialInterface.ReplyStatus.OK:
-                return res
+                break
             elif msg.strip() == "1":
-                return SerialInterface.ReplyStatus.OK
+                res = SerialInterface.ReplyStatus.OK
+                break
 
         self.disable_message_callbacks = disable_message_callbacks_prev
+        return res
 
-    def read_current_position(self):
+    def read_current_position(self)->tuple[float, float, float] | tuple[None, None, None]:
+        """Get the current position of the device
+
+        Returns:
+            tuple[float, float, float] | tuple[None, None, None]: x,y,z floats in workspace coordinates, or None,None,None if the command failed
+        """
         ok, response = self.serial.send_command("M50")
         if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
             return None, None, None
@@ -430,7 +469,17 @@ class OpenMicroStageInterface:
         res, msg = self.serial.send_command(cmd, timeout=5)
         return res
 
-    def set_pose(self, x, y, z):
+    def set_pose(self, x: float, y: float, z: float)->SerialInterface.ReplyStatus:
+        """Set the pose as fast as possible
+
+        Args:
+            x (float): The x coordinate in workspace coordinates
+            y (float): The y coordinate in workspace coordinates
+            z (float): The z coordinate in workspace coordinates
+
+        Returns:
+            SerialInterface.ReplyStatus: The status of the command (e.g. OK, ERROR, TIMEOUT).
+        """
         # Convert to homogeneous vector
         transformed = self.workspace_transform @ np.array([x, y, z, 1.0])
         x_t, y_t, z_t = transformed[:3] / transformed[3]
@@ -439,6 +488,20 @@ class OpenMicroStageInterface:
         res, msg = self.serial.send_command(cmd)
         return res
 
+    def set_temperature(self, temperature: float):
+        """Update the desired temperature
+
+        Args:
+            temperature (float): Value in celsius. The device will try to reach and maintain this temperature.
+        """
+    
+    def set_vacuum(self, vacuum_on: bool):
+        """Turn the vacuum on or off
+
+        Args:
+            vacuum_on (bool): If true, the vacuum will be turned on. If false, it will be turned off.
+        """
+    
     def send_command(self, cmd: str, timeout_s: float = 5):
         res, msg = self.serial.send_command(cmd, timeout_s)
         return res, msg
