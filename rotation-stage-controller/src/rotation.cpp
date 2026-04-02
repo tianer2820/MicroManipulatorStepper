@@ -368,6 +368,15 @@ int rotation_poll(uint32_t dt_us){
 }
 
 void rotation_set(float angle_rad){
+    // the hardware only support -90 to 270 degrees
+    // map the rotation to that range
+    angle_rad += PI / 2.0; // 90 deg offset
+    angle_rad = fmod(angle_rad, 2 * PI);
+    if (angle_rad < 0)
+    {
+        angle_rad += 2 * PI;
+    }
+    angle_rad -= PI / 2.0; // remove 90 deg offset
 
     // convert using the lookup table to counter any magnetic non-linearity
     // a full rotation is index 200

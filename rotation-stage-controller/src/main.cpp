@@ -7,57 +7,7 @@
 #include "rotation.h"
 #include "temperature.h"
 #include "i2c_parser.h"
-
-
-
-// Vacuum runtime settings (tuneable by serial commands)
-uint16_t vac_pull_duty = (uint16_t)(VAC_PWM_MAX * 1.00f); // 100%
-uint16_t vac_hold_duty = (uint16_t)(VAC_PWM_MAX * 0.90f); // 90% default
-uint32_t vac_pull_ms   = 800;                             // pulldown duration then switch to hold
-
-enum VacMode : uint8_t { VAC_OFF=0, VAC_PULLDOWN=1, VAC_HOLD=2 };
-volatile VacMode vac_mode = VAC_OFF;
-uint32_t vac_mode_start_ms = 0;
-
-
-
-
-// -------------------- ADDED: Vacuum functions --------------------
-void vacuum_apply_pwm(uint16_t duty)
-{
-    duty = constrain(duty, 0, VAC_PWM_MAX - 1);
-    analogWrite(VAC_PWM_PIN, duty);
-}
-
-void vacuum_off()
-{
-    vac_mode = VAC_OFF;
-    vacuum_apply_pwm(0);
-}
-
-void vacuum_start_pulldown()
-{
-    vac_mode = VAC_PULLDOWN;
-    vac_mode_start_ms = millis();
-    vacuum_apply_pwm(vac_pull_duty);
-}
-
-void vacuum_hold()
-{
-    vac_mode = VAC_HOLD;
-    vacuum_apply_pwm(vac_hold_duty);
-}
-
-void vacuum_update()
-{
-    if (vac_mode == VAC_PULLDOWN)
-    {
-        if ((millis() - vac_mode_start_ms) >= vac_pull_ms)
-        {
-            vacuum_hold();
-        }
-    }
-}
+#include "vacuum.h"
 
 
 
@@ -80,12 +30,13 @@ void setup()
             .get_temperature_setpoint = temperature_get,
             .get_temperature = temperature_get,
 
-            .set_vacuum = nullptr,
-            .get_vacuum = nullptr,
+            .set_vacuum = vacuum_set,
+            .get_vacuum = vacuum_get,
     });
 
     rotation_init();
     temperature_init();
+    vacuum_init();
 
     rotation_home();
 
@@ -96,9 +47,96 @@ void setup()
 
 int i = 0;
 uint32_t last_time = 0;
-char input_buffer[16] = {0};
+char input_buffer[32] = {0};
 uint16_t input_index = 0;
 
+uint32_t parse_uint(char *str) {
+    uint32_t result = 0;
+    while (*str >= '0' && *str <= '9') {
+        result = result * 10 + (*str - '0');
+        str++;
+    }
+    return result;
+}
+
+static char invalid_command_hint[] = "Invalid command!\n"
+" * Format:\n"
+" * ROT <angle>\n"
+" * where angle is in 1/100 degrees, so 90 deg is 9000\n"
+" * \n"
+" * VAC <0/1>\n"
+" * where 0 is off and 1 is on\n"
+" * \n"
+" * TEM <temp>\n"
+" * where temp is in 1/100 degrees C, so 60C is 6000\n";
+
+/**
+ * Debug command
+ * 
+ * Format:
+ * ROT <angle>
+ * where angle is in 1/100 degrees, so 90 deg is 9000
+ * 
+ * VAC <0/1>
+ * where 0 is off and 1 is on
+ * 
+ * TEM <temp>
+ * where temp is in 1/100 degrees C, so 60C is 6000
+ */
+void parse_uart_input(){
+    
+    if (Serial.available() > 0)
+    {
+        char c = Serial.read();
+        if (c == '\n')
+        {
+            input_buffer[input_index] = '\0';
+
+            // Minimal length
+            if (input_index < 3) {
+                // invalid line
+                Serial.println(invalid_command_hint);
+                input_index = 0;
+                return;
+            }
+
+            char cmd[5] = {0};
+            memcpy(cmd, input_buffer, 4);
+
+            if (strcmp(cmd, "ROT ") == 0) {
+                
+                // input in degree
+                // manual parse to avoid large size
+                int input_raw = parse_uint(input_buffer + 4);
+                Serial.println(input_raw);
+                float input_angle = input_raw / 100.0;
+                float rad_angle = input_angle / 180.0 * PI;
+                while (rad_angle < 0)
+                {
+                    rad_angle += 2 * PI;
+                }
+                rotation_set(rad_angle);
+
+            } else if (strcmp(cmd, "TEM ") == 0) {
+                int input_raw = parse_uint(input_buffer + 4);
+                temperature_set(input_raw / 100.0);
+                
+            } else if (strcmp(cmd, "VAC ") == 0) {
+                vacuum_set(parse_uint(input_buffer + 4));
+            } else {
+                Serial.println(invalid_command_hint);
+                input_index = 0;
+                return;
+            }
+            input_index = 0;
+        }
+        else if (input_index < 31)
+        {
+            input_buffer[input_index] = c;
+            input_index++;
+        }
+    }
+}
 
 
 void loop()
@@ -118,79 +156,7 @@ void loop()
     // poll sensor and get angle
     rotation_poll(dt);
 
-
-    if (Serial.available() > 0)
-    {
-        char c = Serial.read();
-        if (c == '\n')
-        {
-            input_buffer[input_index] = '\0';
-
-            // Minimal parsing
-            if (input_index >= 2 && input_buffer[0] == 'V')
-            {
-                if (input_buffer[1] == '1')
-                {
-                    vacuum_start_pulldown();
-                }
-                else if (input_buffer[1] == '0')
-                {
-                    vacuum_off();
-                }
-                else if (input_buffer[1] == 'H')
-                {
-                    int pct = 0;
-                    for (int n = 2; n < (int)input_index; n++) pct = pct * 10 + (input_buffer[n] - '0');
-                    pct = constrain(pct, 0, 100);
-                    vac_hold_duty = (uint16_t)(VAC_PWM_MAX * (pct / 100.0f));
-                    if (vac_mode == VAC_HOLD) vacuum_apply_pwm(vac_hold_duty);
-                }
-                else if (input_buffer[1] == 'P')
-                {
-                    int pct = 0;
-                    for (int n = 2; n < (int)input_index; n++) pct = pct * 10 + (input_buffer[n] - '0');
-                    pct = constrain(pct, 0, 100);
-                    vac_pull_duty = (uint16_t)(VAC_PWM_MAX * (pct / 100.0f));
-                    if (vac_mode == VAC_PULLDOWN) vacuum_apply_pwm(vac_pull_duty);
-                }
-                else if (input_buffer[1] == 'T')
-                {
-                    int ms = 0;
-                    for (int n = 2; n < (int)input_index; n++) ms = ms * 10 + (input_buffer[n] - '0');
-                    vac_pull_ms = constrain(ms, 0, 10000);
-                }
-            } else {
-                // input in degree
-                // manual parse to avoid large size
-                int temp = 0;
-                for (int n = 0; n < input_index; n++)
-                {
-                    temp = temp * 10 + (input_buffer[n] - '0');
-                }
-                
-                float input_angle = temp / 100.0;
-    
-                float rad_angle = input_angle / 180.0 * PI;
-                while (rad_angle < 0)
-                {
-                    rad_angle += 2 * PI;
-                }
-
-
-                rotation_set(rad_angle);
-            }
-            input_index = 0;
-
-
-        }
-        else if (input_index < 15)
-        {
-            input_buffer[input_index] = c;
-            input_index++;
-        }
-    }
-
-
+    parse_uart_input();
 
     i += 1;
     if (i >= 50)
