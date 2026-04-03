@@ -4,7 +4,7 @@ import csv
 
 # create interface and connect
 oms = OpenMicroStageInterface(show_communication=True, show_log_messages=True)
-oms.connect('COM5')
+oms.connect('COM9')
 oms.read_device_state_info()
 import os
 
