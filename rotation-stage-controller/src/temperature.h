@@ -2,7 +2,7 @@
 #define TEMPERATURE_H
 
 int temperature_init(void);
-int temperature_poll(void);
+int temperature_poll(uint32_t dt_us);
 
 void temperature_set(float temp);
 float temperature_get(void);

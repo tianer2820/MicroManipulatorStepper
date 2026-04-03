@@ -175,6 +175,9 @@ void loop()
         // Serial.println(torque);
         // Serial.println((float)diff / MT6835_CPR * 360, 5);
 
-        temperature_poll();
+        // Serial.println(rotation_get() * 180 / PI, 2);
+
+        temperature_poll(dt);
+        // Serial.println(temperature_get(), 2);
     }
 }
