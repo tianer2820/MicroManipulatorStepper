@@ -553,6 +553,17 @@ class OpenMicroStageInterface:
         """
         if not self.check_connection():
             return 0.0
+        
+        ok, response = self.serial.send_command("M105")
+        if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
+            return 0.0
+        
+        # Parse the response which should contain the temperature value
+        try:
+            temperature = float(response.strip())
+            return temperature
+        except ValueError:
+            return 0.0
 
     def set_temperature(self, temperature: float):
         """Update the desired temperature
@@ -562,6 +573,9 @@ class OpenMicroStageInterface:
         """
         if not self.check_connection():
             return
+        
+        cmd = f"M104 S{temperature:.2f}"
+        res, msg = self.serial.send_command(cmd)
 
     def get_vacuum(self)->bool:
         """Get the current vacuum state
@@ -572,6 +586,19 @@ class OpenMicroStageInterface:
         if not self.check_connection():
             return False
         
+        ok, response = self.serial.send_command("M801")
+        if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
+            return False
+        
+        # Parse the response which should contain V0 or V1
+        try:
+            if '1' in response:
+                return True
+            else:
+                return False
+        except ValueError:
+            return False
+        
     def set_vacuum(self, vacuum_on: bool):
         """Turn the vacuum on or off
 
@@ -580,6 +607,9 @@ class OpenMicroStageInterface:
         """
         if not self.check_connection():
             return
+        
+        cmd = "M10" if vacuum_on else "M11"
+        res, msg = self.serial.send_command(cmd)
     
     def set_rotation(self, angle: float):
         """Set the rotation angle of the stage
@@ -589,6 +619,9 @@ class OpenMicroStageInterface:
         """
         if not self.check_connection():
             return
+        
+        cmd = f"G92 W{angle:.2f}"
+        res, msg = self.serial.send_command(cmd)
     
     def get_rotation(self)->float:
         """Get the current rotation angle of the stage
@@ -597,6 +630,19 @@ class OpenMicroStageInterface:
             float: The current rotation angle in degrees.
         """
         if not self.check_connection():
+            return 0.0
+        
+        ok, response = self.serial.send_command("M114")
+        if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
+            return 0.0
+        
+        # Parse the response which should contain X Y Z W values
+        try:
+            match = re.search(r"W([-+]?\d*\.?\d+)", response)
+            if match:
+                return float(match.group(1))
+            return 0.0
+        except ValueError:
             return 0.0
 
     def send_command(self, cmd: str, timeout_s: float = 5):

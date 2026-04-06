@@ -833,9 +833,9 @@ void Robot::process_tool_output_command(const GCodeCommand& cmd, std::string& re
 }
 
 void Robot::process_set_rot_command(const GCodeCommand& cmd, std::string& reply) {
-  // G92: Set position - currently only supports rotation (C parameter)
-  if(cmd.has_word('C')) {
-    float rotation_deg = cmd.get_value('C');
+  // G92: Set position - currently only supports rotation (W parameter)
+  if(cmd.has_word('W')) {
+    float rotation_deg = cmd.get_value('W');
     if(peripheral != nullptr) {
       peripheral->set_rot(RotDegree(rotation_deg));
       reply = "ok\n";
@@ -915,7 +915,7 @@ void Robot::process_get_vacuum_status_command(const GCodeCommand& cmd, std::stri
   // M801: Get vacuum status
   if(peripheral != nullptr) {
     bool vac_status = peripheral->get_vac();
-    reply = "V" + std::to_string(vac_status) + "\n";
+    reply = std::to_string(vac_status) + "\n";
     reply += "ok\n";
   } else {
     reply = "error: peripheral not initialized\n";
