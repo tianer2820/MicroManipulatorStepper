@@ -219,3 +219,5 @@ __marimo__/
 software/ImageFeatureValidation/**/*.png
 software/ImageFeatureValidation/**/*.xlsx
 software/ImageFeatureValidation/**/*.avi
+software/ImageFeatureValidation/**/*.csv
+!software/ImageFeatureValidation/test_data/**/*.csv

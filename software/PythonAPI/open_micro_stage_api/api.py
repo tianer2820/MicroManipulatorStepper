@@ -358,7 +358,8 @@ class OpenMicroStageInterface:
     
         axis_chars = ["A", "B", "C", "D", "E", "F"]
         if axis_list is None:
-            axis_list = [0, 1, 2]
+            # Home in reverse order for safety
+            axis_list = [2, 1, 0]
 
         # Home one axis at a time
         for axis_idx in axis_list:
