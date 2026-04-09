@@ -35,7 +35,7 @@ constexpr float HOMING_VELOCITY   = 1.0f;        // rad per s
 constexpr float HOMING_CURRENT    = 0.5f;       // range 0..1
 // NOT IMPLEMENTED YET: constexpr float HOMING_FINISH_POS = 0.5f;        // in rad
 constexpr float HOMING_RETRACTION_FIELD_ANGLE = 8.0f;
-constexpr float HOMING_RETRACTION_Z_FIELD_ANGLE = 4.0f;
+constexpr float HOMING_RETRACTION_Z_FIELD_ANGLE = 2.0f;
 constexpr float CALIBRATION_RETRACTION_FIELD_ANGLE = 0.25f;
 
 //--- CALIBRATION -------------------------------------------------------------
@@ -68,6 +68,13 @@ constexpr float VEL_KI = 90.0f;
 // the number of joints requires changing the kinematic model accordingly and
 // also requires the initialization of the correct number of 'RobotJoint' objects
 // in the Robtos init method.
+
+//--- PERIPHERAL ------------------------------------------------------------------
+#define PERIPHERAL_ENABLED true
+#define PERIPHERAL_I2C_ADDRESS 0x10
+#define PERIPHERAL_I2C_INSTANCE i2c0
+#define PERIPHERAL_I2C_SDA_PIN 16
+#define PERIPHERAL_I2C_SCL_PIN 17
 
 //--- PINS --------------------------------------------------------------------
 

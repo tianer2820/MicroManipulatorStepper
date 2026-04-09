@@ -59,6 +59,8 @@ Robot::Robot(float path_segment_time_step) :
     robot_tools[i] = nullptr;
 
   state = ERobotState::IDLE;
+  i2c_handle = nullptr;
+  peripheral = nullptr;
 }
 
 Robot::~Robot() {
@@ -128,6 +130,13 @@ void Robot::init() {
                          Robot::update_motion_controller_isr, 
                          (void*)this, 
                          &motion_controller_update_timer);
+  
+  // setup i2c interfaces if peripheral is enabled
+  if(PERIPHERAL_ENABLED) {
+    i2c_handle = new TwoWire(PERIPHERAL_I2C_INSTANCE, PERIPHERAL_I2C_SDA_PIN, PERIPHERAL_I2C_SCL_PIN);
+    peripheral = new Peripheral(i2c_handle);
+    peripheral->begin(PERIPHERAL_ENABLED);
+  }
 }
 
 
