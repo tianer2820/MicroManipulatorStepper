@@ -1,7 +1,7 @@
 #pragma once
 #include "utilities/utilities.h"
 
-#define TEMP_DEGREE_SCALE_FACTOR 1000.0
+#define TEMP_DEGREE_SCALE_FACTOR 50000.0
 
 class TempDegree {
     public:
@@ -22,7 +22,7 @@ class TempDegree {
         uint32_t value;
 };
 
-#define ROT_DEGREE_SCALE_FACTOR 100.0
+#define ROT_DEGREE_SCALE_FACTOR 1000.0
 
 class RotDegree {
     public:

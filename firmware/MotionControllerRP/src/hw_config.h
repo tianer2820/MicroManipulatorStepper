@@ -71,10 +71,12 @@ constexpr float VEL_KI = 90.0f;
 
 //--- PERIPHERAL ------------------------------------------------------------------
 #define PERIPHERAL_ENABLED true
+#define PERIPHERAL_REQUIRED false
 #define PERIPHERAL_I2C_ADDRESS 0x10
 #define PERIPHERAL_I2C_INSTANCE i2c0
 #define PERIPHERAL_I2C_SDA_PIN 16
 #define PERIPHERAL_I2C_SCL_PIN 17
+#define PERIPHERAL_I2C_CLOCK 30000
 
 //--- PINS --------------------------------------------------------------------
 

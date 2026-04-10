@@ -2,6 +2,7 @@ import re
 import threading
 import time
 from enum import Enum
+from functools import wraps
 import warnings
 
 import numpy as np
@@ -213,6 +214,17 @@ class SerialInterface:
 # --- OpenMicroStageInterface ------------------------------------------------------------------------------------------
 
 
+def synchronized_action(method):
+    """Serialize public hardware actions on a per-instance basis."""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._command_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class OpenMicroStageInterface:
     # Mapping log levels to colors
     LOG_COLORS = {
@@ -235,7 +247,9 @@ class OpenMicroStageInterface:
         self.show_log_messages = show_log_messages
         self.disable_message_callbacks = False
         self.exception_on_no_device = exception_on_no_device
+        self._command_lock = threading.RLock()
 
+    @synchronized_action
     def connect(self, port: str, baud_rate: int = 921600):
         """Connects to the OMM
 
@@ -269,6 +283,7 @@ class OpenMicroStageInterface:
         print("")
         self.disable_message_callbacks = False
 
+    @synchronized_action
     def disconnect(self):
         """Disconnects from the OMM and stops the reader thread. After calling this, the instance cannot be used anymore
         """
@@ -321,12 +336,15 @@ class OpenMicroStageInterface:
         print(Fore.CYAN + msg + Style.RESET_ALL)
         pass
 
+    @synchronized_action
     def set_workspace_transform(self, transform):
         self.workspace_transform = transform
 
+    @synchronized_action
     def get_workspace_transform(self):
         return self.workspace_transform
 
+    @synchronized_action
     def read_firmware_version(self)->tuple[int, int, int]:
         """Reads the firmware version from the device
 
@@ -336,13 +354,14 @@ class OpenMicroStageInterface:
         if not self.check_connection():
             return 0, 0, 0
         
-        ok, response = self.serial.send_command("M58")
+        ok, response = self.send_command("M58")
         if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
             return 0, 0, 0
 
         major, minor, patch = map(int, re.match(r"v(\d+)\.(\d+)\.(\d+)", response).groups())
         return major, minor, patch
 
+    @synchronized_action
     def home(self, axis_list: list[int]=None)->SerialInterface.ReplyStatus:
         """
         Homes one or more axes on the device, one axis at a time
@@ -366,12 +385,13 @@ class OpenMicroStageInterface:
             if (0 > axis_idx) or (axis_idx >= len(axis_chars)):
                 raise ValueError("Axis index out of range")
             cmd = "G28 " + axis_chars[axis_idx]
-            res, msg = self.serial.send_command(cmd + "\n", 10)
+            res, msg = self.send_command(cmd + "\n", 10)
             if res != self.serial.ReplyStatus.OK:
                 return res
         
         return self.serial.ReplyStatus.OK
 
+    @synchronized_action
     def calibrate_joint(self, joint_index: int, save_result: bool)->tuple[SerialInterface.ReplyStatus, list[list[float]]]:
         """
         Calibrates the given joint and returns the measured data as three lists containing:
@@ -385,11 +405,12 @@ class OpenMicroStageInterface:
         cmd = f"M56 J{joint_index} P"
         if save_result:
             cmd += " S"
-        res, msg = self.serial.send_command(cmd, 90)
+        res, msg = self.send_command(cmd, 90)
 
         calibration_data = self._parse_table_data(msg, 3)
         return res, calibration_data
 
+    @synchronized_action
     def move_to(self, x: float, y: float, z: float, f: float, move_immediately: bool=False, blocking: bool=True, timeout: float=1)->SerialInterface.ReplyStatus:
         """
         Moves the stage to an absolute position with a specified feed rate.
@@ -419,10 +440,11 @@ class OpenMicroStageInterface:
 
         # resend messages if queue is full
         while True:
-            res, msg = self.serial.send_command(cmd + "\n", timeout=timeout)
+            res, msg = self.send_command(cmd + "\n", timeout=timeout)
             if res != SerialInterface.ReplyStatus.BUSY or not blocking:
                 return res
 
+    @synchronized_action
     def dwell(self, time_s: float, blocking: bool, timeout: float=1)->SerialInterface.ReplyStatus:
         if not self.check_connection():
             return self.serial.ReplyStatus.OK
@@ -430,11 +452,12 @@ class OpenMicroStageInterface:
         cmd = f"G4 S{time_s:.6f}\n"
         # resend messages if queue is full
         while True:
-            res, msg = self.serial.send_command(cmd + "\n", timeout=timeout)
+            res, msg = self.send_command(cmd + "\n", timeout=timeout)
             if res != SerialInterface.ReplyStatus.BUSY or not blocking:
                 return res
         return SerialInterface.ReplyStatus.OK
 
+    @synchronized_action
     def set_max_acceleration(self, linear_accel, angular_accel):
         if not self.check_connection():
             return self.serial.ReplyStatus.OK
@@ -442,9 +465,10 @@ class OpenMicroStageInterface:
         linear_accel = max(linear_accel, 0.01)
         angular_accel = max(angular_accel, 0.01)
         cmd = f"M204 L{linear_accel:.6f} A{angular_accel:.6f}\n"
-        res, msg = self.serial.send_command(cmd)
+        res, msg = self.send_command(cmd)
         return res
 
+    @synchronized_action
     def wait_for_stop(self, disable_callbacks=True)->SerialInterface.ReplyStatus:
         """Wait for the device to stop movement and complete end
 
@@ -462,7 +486,7 @@ class OpenMicroStageInterface:
             self.disable_message_callbacks = True
 
         while True:
-            res, msg = self.serial.send_command("M53\n")
+            res, msg = self.send_command("M53\n")
             if res != SerialInterface.ReplyStatus.OK:
                 break
             elif msg.strip() == "1":
@@ -472,6 +496,7 @@ class OpenMicroStageInterface:
         self.disable_message_callbacks = disable_message_callbacks_prev
         return res
 
+    @synchronized_action
     def is_stopped(self, disable_callbacks=True)->bool | None:
         """Check if the device is stopped.
 
@@ -487,13 +512,14 @@ class OpenMicroStageInterface:
         if disable_callbacks:
             self.disable_message_callbacks = True
 
-        res, msg = self.serial.send_command("M53\n")
+        res, msg = self.send_command("M53\n")
         self.disable_message_callbacks = disable_message_callbacks_prev
         if res == SerialInterface.ReplyStatus.OK:
             return msg.strip() == "1"
         else:
             return None
         
+    @synchronized_action
     def read_current_position(self)->tuple[float, float, float] | tuple[None, None, None]:
         """Get the current position of the device
 
@@ -503,7 +529,7 @@ class OpenMicroStageInterface:
         if not self.check_connection():
             return 0.0, 0.0, 0.0
         
-        ok, response = self.serial.send_command("M50")
+        ok, response = self.send_command("M50")
         if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
             return None, None, None
 
@@ -515,36 +541,41 @@ class OpenMicroStageInterface:
         x, y, z = match.groups()
         return float(x), float(y), float(z)
 
+    @synchronized_action
     def read_encoder_angles(self):
         if not self.check_connection():
             return []
 
-        ok, response = self.serial.send_command("M51")
+        ok, response = self.send_command("M51")
         if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
             return []
         return []
 
+    @synchronized_action
     def read_device_state_info(self):
         if not self.check_connection():
             return SerialInterface.ReplyStatus.OK
         
-        res, msg = self.serial.send_command("M57")
+        res, msg = self.send_command("M57")
         return res
 
+    @synchronized_action
     def set_servo_parameter(self, pos_kp=150, pos_ki=50000, vel_kp=0.2, vel_ki=100, vel_filter_tc=0.0025):
         if not self.check_connection():
             return SerialInterface.ReplyStatus.OK
         cmd = f"M55 A{pos_kp:.6f} B{pos_ki:.6f} C{vel_kp:.6f} D{vel_ki:.6f} F{vel_filter_tc:.6f}"
-        res, msg = self.serial.send_command(cmd)
+        res, msg = self.send_command(cmd)
         return res
 
+    @synchronized_action
     def enable_motors(self, enable):
         if not self.check_connection():
             return SerialInterface.ReplyStatus.OK
         cmd = "M17" if enable else "M18"
-        res, msg = self.serial.send_command(cmd, timeout=5)
+        res, msg = self.send_command(cmd, timeout_s=5)
         return res
 
+    @synchronized_action
     def set_pose(self, x: float, y: float, z: float)->SerialInterface.ReplyStatus:
         """Set the pose as fast as possible
 
@@ -564,9 +595,10 @@ class OpenMicroStageInterface:
         x_t, y_t, z_t = transformed[:3] / transformed[3]
 
         cmd = f"G24 X{x_t:.6f} Y{y_t:.6f} Z{z_t:.6f}"  # TODO: A, B ,C
-        res, msg = self.serial.send_command(cmd)
+        res, msg = self.send_command(cmd)
         return res
 
+    @synchronized_action
     def get_temperature(self)->float:
         """Get the current temperature
 
@@ -576,7 +608,7 @@ class OpenMicroStageInterface:
         if not self.check_connection():
             return 0.0
         
-        ok, response = self.serial.send_command("M105")
+        ok, response = self.send_command("M105")
         if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
             return 0.0
         
@@ -587,6 +619,7 @@ class OpenMicroStageInterface:
         except ValueError:
             return 0.0
 
+    @synchronized_action
     def set_temperature(self, temperature: float):
         """Update the desired temperature
 
@@ -597,8 +630,9 @@ class OpenMicroStageInterface:
             return
         
         cmd = f"M104 S{temperature:.2f}"
-        res, msg = self.serial.send_command(cmd)
+        res, msg = self.send_command(cmd)
 
+    @synchronized_action
     def get_vacuum(self)->bool:
         """Get the current vacuum state
 
@@ -608,7 +642,7 @@ class OpenMicroStageInterface:
         if not self.check_connection():
             return False
         
-        ok, response = self.serial.send_command("M801")
+        ok, response = self.send_command("M801")
         if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
             return False
         
@@ -621,6 +655,7 @@ class OpenMicroStageInterface:
         except ValueError:
             return False
         
+    @synchronized_action
     def set_vacuum(self, vacuum_on: bool):
         """Turn the vacuum on or off
 
@@ -631,8 +666,9 @@ class OpenMicroStageInterface:
             return
         
         cmd = "M10" if vacuum_on else "M11"
-        res, msg = self.serial.send_command(cmd)
+        res, msg = self.send_command(cmd)
     
+    @synchronized_action
     def set_rotation(self, angle: float):
         """Set the rotation angle of the stage
 
@@ -643,8 +679,9 @@ class OpenMicroStageInterface:
             return
         
         cmd = f"G92 W{angle:.2f}"
-        res, msg = self.serial.send_command(cmd)
+        res, msg = self.send_command(cmd)
     
+    @synchronized_action
     def get_rotation(self)->float:
         """Get the current rotation angle of the stage
 
@@ -654,7 +691,7 @@ class OpenMicroStageInterface:
         if not self.check_connection():
             return 0.0
         
-        ok, response = self.serial.send_command("M114")
+        ok, response = self.send_command("M114")
         if ok != SerialInterface.ReplyStatus.OK or len(response) == 0:
             return 0.0
         
@@ -667,8 +704,10 @@ class OpenMicroStageInterface:
         except ValueError:
             return 0.0
 
-    def send_command(self, cmd: str, timeout_s: float = 5):
-        res, msg = self.serial.send_command(cmd, timeout_s)
+    def send_command(self, cmd: str, timeout: float = 5):
+        if self.serial is None:
+            return SerialInterface.ReplyStatus.ERROR, "No connection to device"
+        res, msg = self.serial.send_command(cmd, timeout)
         return res, msg
 
     @staticmethod
