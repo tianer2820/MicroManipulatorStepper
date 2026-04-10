@@ -3,7 +3,7 @@
 
 #include "rotation.h"
 #include "config.h"
-
+#include "utils.h"
 
 
 
@@ -266,41 +266,71 @@ static uint32_t sensorAngleToFieldAngle(int32_t sensor_angle)
 
 
 uint8_t rotation_home(){
-    // rotate until endstop is triggered, then set current angle as home (0)
-    uint32_t current_angle = 0;
-    uint8_t home_error = 0;
+    // Try to find the endstop, then set current angle as home (0)
+    // rotate forward and backward for 90 deg, if the endstop is not found, return error
+    int32_t current_angle = 0;
+
+    // one full rotation has 50 step cycles, and each step cycle has PWM_MAX_VALUE * 8 field angles
+    const int32_t full_round_field_angle = PWM_MAX_VALUE * 8 * 50;
+    
+    // forward rotation 90 deg
+    bool forward_found = true;
     while (digitalRead(ROTATION_ENDSTOP) == HIGH)
     {
-        if (current_angle > PWM_MAX_VALUE * 8 * 50) {
-            home_error = 1;
+        if (current_angle > full_round_field_angle / 4) {
+            forward_found = false;
             break;
         }
         writeFieldAngle(current_angle);
         current_angle += 256;
+        current_angle = positive_mod(current_angle, full_round_field_angle);
+        
+        delay(1);
+    }
+    
+    // backward rotation 90 deg
+    bool backward_found = true;
+    while (digitalRead(ROTATION_ENDSTOP) == HIGH)
+    {
+        if (current_angle < -full_round_field_angle / 4) {
+            backward_found = false;
+            break;
+        }
+        writeFieldAngle(current_angle);
+        current_angle -= 256;
+        current_angle = positive_mod(current_angle, full_round_field_angle);
 
         delay(1);
     }
 
-    if (home_error){
+    if (!forward_found && !backward_found) {
+        // endstop not found
         return 1;
     }
-
+    
+    
+    // now the homing switch is triggered, move backward to find the front edge
+    
     while (digitalRead(ROTATION_ENDSTOP) == LOW)
     {
         writeFieldAngle(current_angle);
-        current_angle -= 10;
-
+        current_angle -= 20;
+        current_angle = positive_mod(current_angle, full_round_field_angle);
+        
         delay(1);
     }
 
+    // moved past the front edge, move forward a little to trigger the endstop again
     while (digitalRead(ROTATION_ENDSTOP) == HIGH)
     {
         writeFieldAngle(current_angle);
         current_angle += 1;
+        current_angle = positive_mod(current_angle, full_round_field_angle);
 
         delay(1);
     }
 
+    // fully homed
 
     field_angle_at_home = current_angle;
     sensor_angle_wraps = 0;
